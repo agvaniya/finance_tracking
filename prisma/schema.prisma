@@ -1,0 +1,81 @@
+// Money is stored as integer cents everywhere (portable + exact).
+// Enum-like fields use String because SQLite has no native enums;
+// allowed values are enforced in src/lib/domain.ts. This keeps the schema
+// portable: to move to Postgres/MySQL, change only `provider` below and
+// DATABASE_URL (see README "Switching databases").
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model CreditCard {
+  id                 String    @id @default(cuid())
+  name               String
+  issuer             String?
+  lastFour           String?
+  creditLimit        Int // cents
+  // Auto pay: day of month the payment is withdrawn (1-28 recommended).
+  autoPayDay         Int?
+  // STATEMENT | FULL | MINIMUM | FIXED | NONE — how much auto pay withdraws.
+  autoPayType        String    @default("STATEMENT")
+  autoPayFixedAmount Int? // cents, used when autoPayType = FIXED
+  minimumPayment     Int       @default(3500) // cents, used when autoPayType = MINIMUM
+  // Stable chart color slot (0-7), assigned at creation and never repainted.
+  colorSlot          Int       @default(0)
+  archivedAt         DateTime?
+  createdAt          DateTime  @default(now())
+
+  balanceUpdates CardBalanceUpdate[]
+  payments       CardPayment[]
+
+  @@index([archivedAt])
+}
+
+model CardBalanceUpdate {
+  id               String   @id @default(cuid())
+  cardId           String
+  card             CreditCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  totalBalance     Int // cents — full outstanding balance
+  statementBalance Int // cents — last month's balance, due this month
+  reason           String?
+  // SNAPSHOT (user-entered) | PAYMENT (derived from a recorded payment)
+  kind             String   @default("SNAPSHOT")
+  recordedAt       DateTime @default(now())
+
+  @@index([cardId, recordedAt])
+}
+
+model CardPayment {
+  id     String   @id @default(cuid())
+  cardId String
+  card   CreditCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  amount Int // cents
+  note   String?
+  paidAt DateTime @default(now())
+
+  @@index([cardId, paidAt])
+}
+
+model CheckingAccount {
+  id        String   @id @default(cuid())
+  name      String   @default("Checking account")
+  createdAt DateTime @default(now())
+
+  updates CheckingBalanceUpdate[]
+}
+
+model CheckingBalanceUpdate {
+  id         String   @id @default(cuid())
+  accountId  String
+  account    CheckingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  balance    Int // cents
+  reason     String?
+  recordedAt DateTime @default(now())
+
+  @@index([accountId, recordedAt])
+}

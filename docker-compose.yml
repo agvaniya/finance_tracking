@@ -1,0 +1,18 @@
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      # SQLite file inside the persistent volume. Point this at e.g. a
+      # Postgres URL (plus the provider change in prisma/schema.prisma)
+      # to switch databases — see README.
+      DATABASE_URL: "file:/app/data/app.db"
+      APP_PASSWORD: "${APP_PASSWORD:?Set APP_PASSWORD in .env or the environment}"
+      SESSION_SECRET: "${SESSION_SECRET:?Set SESSION_SECRET in .env or the environment}"
+    volumes:
+      - app-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  app-data:
