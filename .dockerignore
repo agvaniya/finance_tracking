@@ -1,8 +1,11 @@
 node_modules
 .next
-prisma/data
 .env
 .git
 Dockerfile
 docker-compose.yml
 README.md
+# Terraform downloads provider binaries into infra/terraform/.terraform
+# (hundreds of MB) — never ship that to the Docker daemon as build context.
+infra
+scripts

@@ -11,6 +11,18 @@ function secretKey(): Uint8Array {
   return new TextEncoder().encode(secret);
 }
 
+/**
+ * Secure cookies require HTTPS. Production defaults to secure; set
+ * SESSION_COOKIE_SECURE=false when serving over plain HTTP (e.g. a Fargate
+ * task reached directly by IP, with no load balancer terminating TLS) —
+ * otherwise the browser silently drops the session cookie and login loops.
+ */
+function cookieSecure(): boolean {
+  const override = process.env.SESSION_COOKIE_SECURE;
+  if (override != null) return override !== "false";
+  return process.env.NODE_ENV === "production";
+}
+
 export async function createSession(): Promise<void> {
   const token = await new SignJWT({ role: "owner" })
     .setProtectedHeader({ alg: "HS256" })
@@ -22,7 +34,7 @@ export async function createSession(): Promise<void> {
   jar.set(COOKIE_NAME, token, {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: cookieSecure(),
     maxAge: SESSION_DAYS * 24 * 60 * 60,
     path: "/",
   });

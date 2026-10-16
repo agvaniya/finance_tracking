@@ -42,4 +42,5 @@ next-env.d.ts
 
 # local database + secrets
 prisma/data/
+infra/terraform/.terraform/
 .env

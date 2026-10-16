@@ -6,10 +6,12 @@
 
 generator client {
   provider = "prisma-client-js"
+  // Engines for the local machine plus the Alpine images used in Docker/Fargate.
+  binaryTargets = ["native", "linux-musl-arm64-openssl-3.0.x", "linux-musl-openssl-3.0.x"]
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 

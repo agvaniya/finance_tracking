@@ -1,0 +1,8 @@
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+crash.log
+# Holds the app password; never commit.
+*.tfvars
+!example.tfvars

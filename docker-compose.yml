@@ -1,18 +1,35 @@
 services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ledgerline
+      POSTGRES_PASSWORD: devpass
+      POSTGRES_DB: ledgerline
+    ports:
+      - "55432:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ledgerline -d ledgerline"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   app:
     build: .
     ports:
       - "3000:3000"
     environment:
-      # SQLite file inside the persistent volume. Point this at e.g. a
-      # Postgres URL (plus the provider change in prisma/schema.prisma)
-      # to switch databases — see README.
-      DATABASE_URL: "file:/app/data/app.db"
+      DATABASE_URL: "postgresql://ledgerline:devpass@db:5432/ledgerline?schema=public"
       APP_PASSWORD: "${APP_PASSWORD:?Set APP_PASSWORD in .env or the environment}"
       SESSION_SECRET: "${SESSION_SECRET:?Set SESSION_SECRET in .env or the environment}"
-    volumes:
-      - app-data:/app/data
+      # Compose serves plain HTTP on localhost, so secure cookies must be off.
+      SESSION_COOKIE_SECURE: "false"
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
-  app-data:
+  db-data:
