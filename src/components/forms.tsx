@@ -19,7 +19,6 @@ import {
   createIncome,
   deleteExpense,
   deleteIncome,
-  login,
   recordCardBalance,
   recordPayment,
   renameChecking,
@@ -768,33 +767,5 @@ export function RenameCheckingButton({ currentName }: { currentName: string }) {
         </DialogShell>
       )}
     </>
-  );
-}
-
-// ---------- login ----------
-
-export function LoginForm() {
-  const [state, formAction, pending] = useActionState(login, {});
-  return (
-    <form action={formAction} className="space-y-4">
-      <Field label="Password">
-        <input
-          type="password"
-          name="password"
-          required
-          autoFocus
-          autoComplete="current-password"
-          className={inputClass}
-        />
-      </Field>
-      {state.error && (
-        <p role="alert" className="rounded-lg bg-critical-wash px-3 py-2 text-sm text-critical">
-          {state.error}
-        </p>
-      )}
-      <button type="submit" disabled={pending} className={cx(buttonStyles.primary, "w-full")}>
-        {pending ? "Signing in…" : "Sign in"}
-      </button>
-    </form>
   );
 }

@@ -10,12 +10,6 @@ variable "project_name" {
   default     = "ledgerline"
 }
 
-variable "app_password" {
-  description = "Login password for the application (the APP_PASSWORD env var)."
-  type        = string
-  sensitive   = true
-}
-
 variable "image_tag" {
   description = "Container image tag to run. deploy.sh writes this into image.auto.tfvars."
   type        = string

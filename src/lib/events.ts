@@ -33,6 +33,7 @@ export interface CalendarEvent {
  * taken from the forecast when it projects a tight or negative balance).
  */
 export async function getMonthEvents(
+  userId: string,
   year: number,
   monthIndex: number,
   forecast: Forecast,
@@ -44,18 +45,18 @@ export async function getMonthEvents(
 
   const [cardUpdates, payments, checkingUpdates, cards] = await Promise.all([
     prisma.cardBalanceUpdate.findMany({
-      where: { recordedAt: { gte: from, lt: to }, kind: "SNAPSHOT" },
+      where: { recordedAt: { gte: from, lt: to }, kind: "SNAPSHOT", card: { userId } },
       include: { card: true },
     }),
     prisma.cardPayment.findMany({
-      where: { paidAt: { gte: from, lt: to } },
+      where: { paidAt: { gte: from, lt: to }, card: { userId } },
       include: { card: true },
     }),
     prisma.checkingBalanceUpdate.findMany({
-      where: { recordedAt: { gte: from, lt: to } },
+      where: { recordedAt: { gte: from, lt: to }, account: { userId } },
       include: { account: true },
     }),
-    prisma.creditCard.findMany({ where: { archivedAt: null } }),
+    prisma.creditCard.findMany({ where: { archivedAt: null, userId } }),
   ]);
 
   const events: CalendarEvent[] = [];
@@ -73,7 +74,7 @@ export async function getMonthEvents(
 
   // Paid-off moments: a payment-derived update that brought the total to zero.
   const payoffUpdates = await prisma.cardBalanceUpdate.findMany({
-    where: { recordedAt: { gte: from, lt: to }, kind: "PAYMENT", totalBalance: 0 },
+    where: { recordedAt: { gte: from, lt: to }, kind: "PAYMENT", totalBalance: 0, card: { userId } },
     include: { card: true },
   });
   for (const u of payoffUpdates) {
@@ -135,7 +136,9 @@ export async function getMonthEvents(
   }
 
   // Scheduled paydays still ahead of us this month.
-  const incomes = await prisma.recurringIncome.findMany({ where: { active: true } });
+  const incomes = await prisma.recurringIncome.findMany({
+    where: { active: true, account: { userId } },
+  });
   const monthEnd = new Date(year, monthIndex + 1, 0);
   for (const income of incomes) {
     for (const date of scheduleOccurrences(income, today > from ? today : from, monthEnd)) {
@@ -152,11 +155,13 @@ export async function getMonthEvents(
 
   // Scheduled bills still ahead of us this month, at their corrected amount
   // where the real figure has been entered.
-  const expenses = await prisma.recurringExpense.findMany({ where: { active: true } });
+  const expenses = await prisma.recurringExpense.findMany({
+    where: { active: true, account: { userId } },
+  });
   if (expenses.length > 0) {
     const adjustments = adjustmentIndex(
       await prisma.expenseAdjustment.findMany({
-        where: { dueDate: { gte: from, lt: to } },
+        where: { dueDate: { gte: from, lt: to }, expense: { account: { userId } } },
       })
     );
     for (const expense of expenses) {

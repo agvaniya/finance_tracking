@@ -1,25 +1,26 @@
 import { redirect } from "next/navigation";
-import { hasValidSession } from "@/lib/auth";
-import { LoginForm } from "@/components/forms";
-import { Wordmark } from "@/components/Wordmark";
+import { getSessionUserId } from "@/lib/auth";
+import { SignInForm } from "@/components/accountForms";
+import { AuthShell } from "@/components/AuthShell";
 
 export const metadata = { title: "Sign in — Ledgerline" };
 
-export default async function LoginPage() {
-  if (await hasValidSession()) redirect("/");
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ deleted?: string }>;
+}) {
+  if (await getSessionUserId()) redirect("/");
+  const { deleted } = await searchParams;
+
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center px-4">
-      <div className="w-full max-w-sm">
-        <div className="mb-6 flex flex-col items-center gap-2 text-center">
-          <Wordmark large />
-          <p className="text-sm text-ink-2">
-            Credit card balances, checking account, and the month ahead.
-          </p>
-        </div>
-        <div className="rounded-xl border border-hairline bg-surface p-6 shadow-[0_1px_2px_rgba(11,11,11,0.04)]">
-          <LoginForm />
-        </div>
-      </div>
-    </main>
+    <AuthShell>
+      {deleted === "1" && (
+        <p className="mb-4 rounded-lg bg-good-wash px-3 py-2 text-sm text-good-text">
+          Your account and all of its data have been deleted.
+        </p>
+      )}
+      <SignInForm />
+    </AuthShell>
   );
 }

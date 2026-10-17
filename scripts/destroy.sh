@@ -33,9 +33,6 @@ printf 'Type "destroy" to confirm: '
 read -r CONFIRM
 [ "$CONFIRM" = "destroy" ] || { printf 'Cancelled.\n'; exit 1; }
 
-# Terraform still wants a value for the required variable while destroying.
-export TF_VAR_app_password="${TF_VAR_app_password:-unused-during-destroy}"
-
 printf '\nTo dump the database first, cancel now and run:\n'
 # shellcheck disable=SC2016  # printing a command for the user to copy, not running it
 printf '  pg_dump "$(terraform -chdir=%s output -raw database_url 2>/dev/null)" > backup.sql\n' "$TF_DIR"

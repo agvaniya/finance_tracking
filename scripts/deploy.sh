@@ -7,8 +7,9 @@
 #   scripts/deploy.sh --skip-build    roll out the image already in ECR
 #   scripts/deploy.sh --skip-infra    build and push, then force a new deployment
 #
-# Reads APP_PASSWORD from the environment, falling back to the .env file.
+# Reads ACME_EMAIL from the environment, falling back to the .env file.
 # Everything else is configured in infra/terraform (see example.tfvars).
+# Application accounts are created through the app's signup page.
 
 set -euo pipefail
 
@@ -65,20 +66,6 @@ if ! ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text 2>/
 fi
 info "AWS account: $ACCOUNT_ID"
 
-# The app password is a Terraform input; keep it out of the command line and
-# out of version control by passing it through the environment.
-if [ -z "${TF_VAR_app_password:-}" ]; then
-  if [ -n "${APP_PASSWORD:-}" ]; then
-    TF_VAR_app_password="$APP_PASSWORD"
-  elif [ -f "$ROOT_DIR/.env" ]; then
-    TF_VAR_app_password="$(
-      grep -E '^[[:space:]]*APP_PASSWORD=' "$ROOT_DIR/.env" |
-        tail -1 | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
-    )"
-  fi
-fi
-[ -n "${TF_VAR_app_password:-}" ] || fail "Set APP_PASSWORD (in the environment or .env) — it becomes the app's login password."
-export TF_VAR_app_password
 
 # Let's Encrypt requires a contact address. Fall back to ACME_EMAIL from the
 # environment or .env so the common case needs no tfvars file.

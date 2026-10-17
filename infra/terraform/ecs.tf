@@ -52,7 +52,6 @@ data "aws_iam_policy_document" "execution_secrets" {
     actions = ["ssm:GetParameters"]
     resources = [
       aws_ssm_parameter.database_url.arn,
-      aws_ssm_parameter.app_password.arn,
       aws_ssm_parameter.session_secret.arn,
     ]
   }
@@ -204,7 +203,6 @@ resource "aws_ecs_task_definition" "app" {
 
     secrets = [
       { name = "DATABASE_URL", valueFrom = aws_ssm_parameter.database_url.arn },
-      { name = "APP_PASSWORD", valueFrom = aws_ssm_parameter.app_password.arn },
       { name = "SESSION_SECRET", valueFrom = aws_ssm_parameter.session_secret.arn },
     ]
 

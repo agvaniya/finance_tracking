@@ -4,6 +4,7 @@ import { AddCardButton, RecordPaymentButton, UpdateBalanceButton } from "@/compo
 import { Dot, EmptyState, Money, cx } from "@/components/ui";
 import { seriesColor } from "@/lib/colors";
 import { AUTO_PAY_LABELS, autoPayDateInMonth, type AutoPayType } from "@/lib/domain";
+import { requireUserId } from "@/lib/auth";
 import { getCardsWithState } from "@/lib/queries";
 
 export const dynamic = "force-dynamic";
@@ -27,7 +28,8 @@ function UtilizationBar({ used, limit }: { used: number; limit: number }) {
 }
 
 export default async function CardsPage() {
-  const cards = await getCardsWithState();
+  const userId = await requireUserId();
+  const cards = await getCardsWithState(userId);
   const now = new Date();
 
   return (

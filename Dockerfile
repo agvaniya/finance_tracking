@@ -29,7 +29,7 @@ RUN npx prisma generate && npm run build
 FROM node:22-alpine AS runner
 RUN apk add --no-cache openssl ca-certificates libcap bash
 WORKDIR /app
-# DATABASE_URL, APP_PASSWORD and SESSION_SECRET are injected at runtime
+# DATABASE_URL and SESSION_SECRET are injected at runtime
 # (compose env, or SSM Parameter Store on Fargate).
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \

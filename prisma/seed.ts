@@ -6,8 +6,12 @@
  * Run with: npm run db:seed
  */
 import { PrismaClient } from "@prisma/client";
+import { hashAnswer, hashSecret } from "../src/lib/password";
 
 const prisma = new PrismaClient();
+
+const DEMO_USERNAME = process.env.SEED_USERNAME ?? "demo";
+const DEMO_PASSWORD = process.env.SEED_PASSWORD ?? "demo-password-1";
 
 // Small deterministic PRNG (mulberry32) so reseeding produces identical data.
 function mulberry32(seed: number) {
@@ -39,20 +43,37 @@ async function main() {
     return;
   }
 
+  // Everything below belongs to one demo account; sign in with these to see it.
+  const existingUser = await prisma.user.findUnique({ where: { username: DEMO_USERNAME } });
+  const user =
+    existingUser ??
+    (await prisma.user.create({
+      data: {
+        username: DEMO_USERNAME,
+        passwordHash: await hashSecret(DEMO_PASSWORD),
+        securityQuestions: {
+          create: [
+            { question: "What was the name of your first pet?", answerHash: await hashAnswer("Rex"), position: 0 },
+            { question: "What city were you born in?", answerHash: await hashAnswer("Boston"), position: 1 },
+          ],
+        },
+      },
+    }));
+
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const start = new Date(today.getTime() - 105 * DAY);
 
   // ---- Checking account -------------------------------------------------
   // Reuse the shell if one exists so the app does not end up with two.
-  const existingAccount = await prisma.checkingAccount.findFirst();
+  const existingAccount = await prisma.checkingAccount.findFirst({ where: { userId: user.id } });
   const account = existingAccount
     ? await prisma.checkingAccount.update({
         where: { id: existingAccount.id },
-        data: { name: "Everyday Checking", createdAt: start },
+        data: { name: "Everyday Checking", createdAt: start, userId: user.id },
       })
     : await prisma.checkingAccount.create({
-        data: { name: "Everyday Checking", createdAt: start },
+        data: { name: "Everyday Checking", createdAt: start, userId: user.id },
       });
 
   let checking = 420_000; // $4,200.00
@@ -167,7 +188,9 @@ async function main() {
 
   for (const spec of cardSpecs) {
     const { startTotal, monthlySpend, ...data } = spec;
-    const card = await prisma.creditCard.create({ data: { ...data, createdAt: start } });
+    const card = await prisma.creditCard.create({
+      data: { ...data, createdAt: start, userId: user.id },
+    });
 
     let total = startTotal;
     let statement = Math.round(startTotal * 0.8);
@@ -237,6 +260,7 @@ async function main() {
   }
 
   console.log(`Seeded checking account with ${checkingUpdates.length} updates.`);
+  console.log(`Sign in as "${DEMO_USERNAME}" with password "${DEMO_PASSWORD}".`);
 }
 
 main()

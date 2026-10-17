@@ -15,8 +15,43 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/// An account holder. Every card and checking account belongs to exactly one
+/// user, and all reads are filtered by the signed-in user's id.
+model User {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+
+  securityQuestions SecurityQuestion[]
+  cards             CreditCard[]
+  checkingAccounts  CheckingAccount[]
+}
+
+/// Used only to re-establish access when a password is forgotten. Answers are
+/// hashed exactly like passwords — they are credentials, not profile data.
+model SecurityQuestion {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  question   String
+  answerHash String
+  position   Int
+
+  @@unique([userId, position])
+  @@index([userId])
+}
+
 model CreditCard {
-  id                 String    @id @default(cuid())
+  id String @id @default(cuid())
+
+  // Nullable only so the multi-user migration could run without touching
+  // existing rows; the first account created claims any such orphans. Every
+  // query filters on it, so an unclaimed row is visible to nobody.
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   name               String
   issuer             String?
   lastFour           String?
@@ -36,6 +71,7 @@ model CreditCard {
   payments       CardPayment[]
 
   @@index([archivedAt])
+  @@index([userId])
 }
 
 model CardBalanceUpdate {
@@ -64,13 +100,20 @@ model CardPayment {
 }
 
 model CheckingAccount {
-  id        String   @id @default(cuid())
+  id String @id @default(cuid())
+
+  // See the note on CreditCard.userId.
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   name      String   @default("Checking account")
   createdAt DateTime @default(now())
 
   updates  CheckingBalanceUpdate[]
   incomes  RecurringIncome[]
   expenses RecurringExpense[]
+
+  @@index([userId])
 }
 
 /// A salary or other income that lands on a repeating schedule. Several may

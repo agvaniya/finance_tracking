@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { prisma } from "./db";
-import { checkPassword, createSession, destroySession, requireSession } from "./auth";
+import { requireUserId } from "./auth";
 import { isAutoPayType, isScheduleFrequency, usesDayOfMonth } from "./domain";
 import { parseDollarsToCents } from "./money";
 
@@ -12,20 +12,29 @@ export interface ActionState {
   error?: string;
 }
 
-// ---------- auth ----------
+// Ownership helpers. Every action that names a record by id must prove the
+// signed-in user owns it before reading or writing, otherwise a guessed id
+// would reach another account's data.
 
-export async function login(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const password = String(formData.get("password") ?? "");
-  if (!checkPassword(password)) {
-    return { error: "That password is not correct." };
-  }
-  await createSession();
-  redirect("/");
+async function assertOwnsCard(userId: string, cardId: string): Promise<void> {
+  const card = await prisma.creditCard.findFirst({ where: { id: cardId, userId }, select: { id: true } });
+  if (!card) throw new Error("Card not found");
 }
 
-export async function logout(): Promise<void> {
-  await destroySession();
-  redirect("/login");
+async function assertOwnsIncome(userId: string, incomeId: string): Promise<void> {
+  const income = await prisma.recurringIncome.findFirst({
+    where: { id: incomeId, account: { userId } },
+    select: { id: true },
+  });
+  if (!income) throw new Error("Income not found");
+}
+
+async function assertOwnsExpense(userId: string, expenseId: string): Promise<void> {
+  const expense = await prisma.recurringExpense.findFirst({
+    where: { id: expenseId, account: { userId } },
+    select: { id: true },
+  });
+  if (!expense) throw new Error("Expense not found");
 }
 
 // ---------- helpers ----------
@@ -99,17 +108,18 @@ function parseCardFields(formData: FormData): { error?: string; data?: {
 }
 
 export async function createCard(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  await requireSession();
+  const userId = await requireUserId();
   const parsed = parseCardFields(formData);
   if (parsed.error || !parsed.data) return { error: parsed.error };
 
   const initialBalance = cents(formData, "initialBalance");
   const initialStatement = cents(formData, "initialStatement") ?? 0;
 
-  const count = await prisma.creditCard.count();
+  const count = await prisma.creditCard.count({ where: { userId } });
   await prisma.creditCard.create({
     data: {
       ...parsed.data,
+      userId,
       colorSlot: count % 8,
       balanceUpdates:
         initialBalance != null
@@ -129,7 +139,8 @@ export async function createCard(_prev: ActionState, formData: FormData): Promis
 }
 
 export async function updateCard(cardId: string, _prev: ActionState, formData: FormData): Promise<ActionState> {
-  await requireSession();
+  const userId = await requireUserId();
+  await assertOwnsCard(userId, cardId);
   const parsed = parseCardFields(formData);
   if (parsed.error || !parsed.data) return { error: parsed.error };
   await prisma.creditCard.update({ where: { id: cardId }, data: parsed.data });
@@ -138,14 +149,16 @@ export async function updateCard(cardId: string, _prev: ActionState, formData: F
 }
 
 export async function archiveCard(cardId: string): Promise<void> {
-  await requireSession();
+  const userId = await requireUserId();
+  await assertOwnsCard(userId, cardId);
   await prisma.creditCard.update({ where: { id: cardId }, data: { archivedAt: new Date() } });
   revalidateAll();
   redirect("/cards");
 }
 
 export async function recordCardBalance(cardId: string, _prev: ActionState, formData: FormData): Promise<ActionState> {
-  await requireSession();
+  const userId = await requireUserId();
+  await assertOwnsCard(userId, cardId);
   const total = cents(formData, "totalBalance");
   if (total == null || total < 0) return { error: "Enter the current total balance." };
   const statement = cents(formData, "statementBalance");
@@ -166,7 +179,8 @@ export async function recordCardBalance(cardId: string, _prev: ActionState, form
 }
 
 export async function recordPayment(cardId: string, _prev: ActionState, formData: FormData): Promise<ActionState> {
-  await requireSession();
+  const userId = await requireUserId();
+  await assertOwnsCard(userId, cardId);
   const amount = cents(formData, "amount");
   if (amount == null || amount <= 0) return { error: "Enter a payment amount above $0." };
   const note = text(formData, "note");
@@ -195,6 +209,7 @@ export async function recordPayment(cardId: string, _prev: ActionState, formData
     });
     if (deductFromChecking) {
       const account = await tx.checkingAccount.findFirst({
+        where: { userId },
         include: { updates: { orderBy: { recordedAt: "desc" }, take: 1 } },
       });
       if (account && account.updates[0]) {
@@ -215,13 +230,13 @@ export async function recordPayment(cardId: string, _prev: ActionState, formData
 // ---------- checking ----------
 
 export async function updateChecking(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  await requireSession();
+  const userId = await requireUserId();
   const balance = cents(formData, "balance");
   if (balance == null) return { error: "Enter the current checking balance." };
 
-  let account = await prisma.checkingAccount.findFirst();
+  let account = await prisma.checkingAccount.findFirst({ where: { userId } });
   if (!account) {
-    account = await prisma.checkingAccount.create({ data: {} });
+    account = await prisma.checkingAccount.create({ data: { userId } });
   }
   await prisma.checkingBalanceUpdate.create({
     data: { accountId: account.id, balance, reason: text(formData, "reason") },
@@ -286,27 +301,28 @@ function parseIncomeFields(formData: FormData): { error?: string; data?: {
 }
 
 /** The checking account is created lazily, so income can be set up first. */
-async function checkingAccountId(): Promise<string> {
-  const existing = await prisma.checkingAccount.findFirst();
+async function checkingAccountId(userId: string): Promise<string> {
+  const existing = await prisma.checkingAccount.findFirst({ where: { userId } });
   if (existing) return existing.id;
-  const created = await prisma.checkingAccount.create({ data: {} });
+  const created = await prisma.checkingAccount.create({ data: { userId } });
   return created.id;
 }
 
 export async function createIncome(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  await requireSession();
+  const userId = await requireUserId();
   const parsed = parseIncomeFields(formData);
   if (parsed.error || !parsed.data) return { error: parsed.error };
 
   await prisma.recurringIncome.create({
-    data: { ...parsed.data, accountId: await checkingAccountId() },
+    data: { ...parsed.data, accountId: await checkingAccountId(userId) },
   });
   revalidateAll();
   return { ok: true };
 }
 
 export async function updateIncome(incomeId: string, _prev: ActionState, formData: FormData): Promise<ActionState> {
-  await requireSession();
+  const userId = await requireUserId();
+  await assertOwnsIncome(userId, incomeId);
   const parsed = parseIncomeFields(formData);
   if (parsed.error || !parsed.data) return { error: parsed.error };
 
@@ -321,7 +337,8 @@ export async function updateIncome(incomeId: string, _prev: ActionState, formDat
  * that point.
  */
 export async function setIncomeActive(incomeId: string, active: boolean): Promise<void> {
-  await requireSession();
+  const userId = await requireUserId();
+  await assertOwnsIncome(userId, incomeId);
   await prisma.recurringIncome.update({
     where: { id: incomeId },
     data: { active, pausedAt: active ? null : new Date() },
@@ -330,7 +347,8 @@ export async function setIncomeActive(incomeId: string, active: boolean): Promis
 }
 
 export async function deleteIncome(incomeId: string): Promise<void> {
-  await requireSession();
+  const userId = await requireUserId();
+  await assertOwnsIncome(userId, incomeId);
   await prisma.recurringIncome.delete({ where: { id: incomeId } });
   revalidateAll();
 }
@@ -356,19 +374,20 @@ function parseExpenseFields(formData: FormData): { error?: string; data?: {
 }
 
 export async function createExpense(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  await requireSession();
+  const userId = await requireUserId();
   const parsed = parseExpenseFields(formData);
   if (parsed.error || !parsed.data) return { error: parsed.error };
 
   await prisma.recurringExpense.create({
-    data: { ...parsed.data, accountId: await checkingAccountId() },
+    data: { ...parsed.data, accountId: await checkingAccountId(userId) },
   });
   revalidateAll();
   return { ok: true };
 }
 
 export async function updateExpense(expenseId: string, _prev: ActionState, formData: FormData): Promise<ActionState> {
-  await requireSession();
+  const userId = await requireUserId();
+  await assertOwnsExpense(userId, expenseId);
   const parsed = parseExpenseFields(formData);
   if (parsed.error || !parsed.data) return { error: parsed.error };
 
@@ -378,7 +397,8 @@ export async function updateExpense(expenseId: string, _prev: ActionState, formD
 }
 
 export async function setExpenseActive(expenseId: string, active: boolean): Promise<void> {
-  await requireSession();
+  const userId = await requireUserId();
+  await assertOwnsExpense(userId, expenseId);
   await prisma.recurringExpense.update({
     where: { id: expenseId },
     data: { active, pausedAt: active ? null : new Date() },
@@ -387,7 +407,8 @@ export async function setExpenseActive(expenseId: string, active: boolean): Prom
 }
 
 export async function deleteExpense(expenseId: string): Promise<void> {
-  await requireSession();
+  const userId = await requireUserId();
+  await assertOwnsExpense(userId, expenseId);
   await prisma.recurringExpense.delete({ where: { id: expenseId } });
   revalidateAll();
 }
@@ -402,7 +423,8 @@ export async function adjustBill(
   _prev: ActionState,
   formData: FormData
 ): Promise<ActionState> {
-  await requireSession();
+  const userId = await requireUserId();
+  await assertOwnsExpense(userId, expenseId);
 
   const amount = cents(formData, "amount");
   if (amount == null || amount < 0) {
@@ -422,21 +444,22 @@ export async function adjustBill(
 
 /** Drop a correction so the occurrence falls back to the scheduled estimate. */
 export async function clearBillAdjustment(expenseId: string, dueDateISO: string): Promise<void> {
-  await requireSession();
+  const userId = await requireUserId();
+  await assertOwnsExpense(userId, expenseId);
   const dueDate = new Date(`${dueDateISO}T00:00:00`);
   await prisma.expenseAdjustment.deleteMany({ where: { expenseId, dueDate } });
   revalidateAll();
 }
 
 export async function renameChecking(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  await requireSession();
+  const userId = await requireUserId();
   const name = text(formData, "name");
   if (!name) return { error: "Enter an account name." };
-  const account = await prisma.checkingAccount.findFirst();
+  const account = await prisma.checkingAccount.findFirst({ where: { userId } });
   if (account) {
     await prisma.checkingAccount.update({ where: { id: account.id }, data: { name } });
   } else {
-    await prisma.checkingAccount.create({ data: { name } });
+    await prisma.checkingAccount.create({ data: { name, userId } });
   }
   revalidateAll();
   return { ok: true };

@@ -22,7 +22,6 @@ services:
       - "3000:3000"
     environment:
       DATABASE_URL: "postgresql://ledgerline:devpass@db:5432/ledgerline?schema=public"
-      APP_PASSWORD: "${APP_PASSWORD:?Set APP_PASSWORD in .env or the environment}"
       SESSION_SECRET: "${SESSION_SECRET:?Set SESSION_SECRET in .env or the environment}"
       # Compose serves plain HTTP on localhost, so secure cookies must be off.
       SESSION_COOKIE_SECURE: "false"

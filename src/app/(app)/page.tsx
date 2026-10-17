@@ -3,6 +3,7 @@ import { AddCardButton, UpdateCheckingButton } from "@/components/forms";
 import { DistributionDonut, ProjectionChart, TrendChart } from "@/components/charts";
 import { MonthCalendar } from "@/components/Calendar";
 import { Dot, EmptyState, Money, Panel, cx } from "@/components/ui";
+import { requireUserId } from "@/lib/auth";
 import { getTrendData } from "@/lib/chartData";
 import { CHECKING_COLOR, STATUS, seriesColor } from "@/lib/colors";
 import { getMonthEvents } from "@/lib/events";
@@ -53,17 +54,18 @@ export default async function DashboardPage({
   searchParams: Promise<{ month?: string }>;
 }) {
   const { month } = await searchParams;
+  const userId = await requireUserId();
 
   const [cards, checking, checkingHistory, trend, activity, incomes, expenses, adjustments] =
     await Promise.all([
-      getCardsWithState(),
-      getCheckingAccount(),
-      getCheckingHistory(),
-      getTrendData(90),
-      getRecentActivity(10),
-      getIncomes(),
-      getExpenses(),
-      getExpenseAdjustments(),
+      getCardsWithState(userId),
+      getCheckingAccount(userId),
+      getCheckingHistory(userId),
+      getTrendData(userId, 90),
+      getRecentActivity(userId, 10),
+      getIncomes(userId),
+      getExpenses(userId),
+      getExpenseAdjustments(userId),
     ]);
 
   const forecast = buildForecast(
@@ -81,7 +83,7 @@ export default async function DashboardPage({
     : [now.getFullYear(), now.getMonth()];
   const prev = new Date(calYear, calMonth - 1, 1);
   const next = new Date(calYear, calMonth + 1, 1);
-  const events = await getMonthEvents(calYear, calMonth, forecast);
+  const events = await getMonthEvents(userId, calYear, calMonth, forecast);
 
   const totalDebt = cards.reduce((s, c) => s + (c.current?.totalBalance ?? 0), 0);
   const dueThisMonth = cards.reduce((s, c) => s + (c.current?.statementBalance ?? 0), 0);

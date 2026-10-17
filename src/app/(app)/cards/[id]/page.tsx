@@ -9,13 +9,16 @@ import { sampleDailySeries } from "@/lib/chartData";
 import { seriesColor } from "@/lib/colors";
 import { AUTO_PAY_LABELS, type AutoPayType } from "@/lib/domain";
 import { formatCents } from "@/lib/money";
+import { requireUserId } from "@/lib/auth";
 import { getCard } from "@/lib/queries";
 
 export const dynamic = "force-dynamic";
 
 export default async function CardDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const card = await getCard(id);
+  const userId = await requireUserId();
+  // getCard filters by owner, so another user's id simply 404s.
+  const card = await getCard(userId, id);
   if (!card) notFound();
 
   const current = card.balanceUpdates[0] ?? null;

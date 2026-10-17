@@ -1,9 +1,6 @@
 # Copy to terraform.tfvars and edit, or let scripts/deploy.sh pass values from
-# your .env file. Everything here has a working default except app_password
-# and acme_email.
-
-# Login password for the app.
-app_password = "change-me"
+# your .env file. Everything here has a working default except acme_email.
+# Application accounts are created through the app's own signup page.
 
 # Registered with Let's Encrypt; receives certificate expiry warnings.
 acme_email = "you@example.com"

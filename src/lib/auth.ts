@@ -1,6 +1,7 @@
 import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { prisma } from "./db";
 
 const COOKIE_NAME = "ft_session";
 const SESSION_DAYS = 30;
@@ -23,9 +24,10 @@ function cookieSecure(): boolean {
   return process.env.NODE_ENV === "production";
 }
 
-export async function createSession(): Promise<void> {
-  const token = await new SignJWT({ role: "owner" })
+export async function createSession(userId: string): Promise<void> {
+  const token = await new SignJWT({})
     .setProtectedHeader({ alg: "HS256" })
+    .setSubject(userId)
     .setIssuedAt()
     .setExpirationTime(`${SESSION_DAYS}d`)
     .sign(secretKey());
@@ -45,31 +47,74 @@ export async function destroySession(): Promise<void> {
   jar.delete(COOKIE_NAME);
 }
 
-export async function hasValidSession(): Promise<boolean> {
+/** The signed-in user's id, or null. Verifies the user still exists. */
+export async function getSessionUserId(): Promise<string | null> {
   const jar = await cookies();
   const token = jar.get(COOKIE_NAME)?.value;
-  if (!token) return false;
+  if (!token) return null;
   try {
-    await jwtVerify(token, secretKey());
-    return true;
+    const { payload } = await jwtVerify(token, secretKey());
+    const userId = payload.sub;
+    if (typeof userId !== "string") return null;
+    // A deleted account must not keep a working session.
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { id: true } });
+    return user?.id ?? null;
   } catch {
+    return null;
+  }
+}
+
+export async function getSessionUser() {
+  const userId = await getSessionUserId();
+  if (!userId) return null;
+  return prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, username: true, createdAt: true },
+  });
+}
+
+/**
+ * Call at the top of every protected page and every action that touches data.
+ * Returns the owning user id, which all queries must filter on.
+ */
+export async function requireUserId(): Promise<string> {
+  const userId = await getSessionUserId();
+  if (!userId) redirect("/login");
+  return userId;
+}
+
+// ---------------------------------------------------------------------------
+// Throttling
+// ---------------------------------------------------------------------------
+
+/**
+ * Best-effort guard against guessing passwords and security answers. The
+ * counter lives in memory, which is enough for the single-task deployment this
+ * app ships with; behind several instances it would need shared state.
+ */
+const attempts = new Map<string, { count: number; firstAt: number }>();
+const WINDOW_MS = 15 * 60 * 1000;
+const MAX_ATTEMPTS = 10;
+
+export function tooManyAttempts(key: string): boolean {
+  const entry = attempts.get(key);
+  if (!entry) return false;
+  if (Date.now() - entry.firstAt > WINDOW_MS) {
+    attempts.delete(key);
     return false;
   }
+  return entry.count >= MAX_ATTEMPTS;
 }
 
-/** Call at the top of every protected page or action. */
-export async function requireSession(): Promise<void> {
-  if (!(await hasValidSession())) redirect("/login");
-}
-
-export function checkPassword(candidate: string): boolean {
-  const expected = process.env.APP_PASSWORD;
-  if (!expected) return false;
-  // Constant-time-ish comparison to avoid trivial timing leaks.
-  if (candidate.length !== expected.length) return false;
-  let diff = 0;
-  for (let i = 0; i < expected.length; i++) {
-    diff |= candidate.charCodeAt(i) ^ expected.charCodeAt(i);
+export function recordFailedAttempt(key: string): void {
+  const entry = attempts.get(key);
+  if (!entry || Date.now() - entry.firstAt > WINDOW_MS) {
+    attempts.set(key, { count: 1, firstAt: Date.now() });
+    return;
   }
-  return diff === 0;
+  entry.count += 1;
+}
+
+export function clearAttempts(key: string): void {
+  attempts.delete(key);
 }

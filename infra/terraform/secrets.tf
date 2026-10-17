@@ -26,12 +26,6 @@ resource "aws_ssm_parameter" "database_url" {
   value       = local.database_url
 }
 
-resource "aws_ssm_parameter" "app_password" {
-  name        = "/${var.project_name}/APP_PASSWORD"
-  description = "Ledgerline login password"
-  type        = "SecureString"
-  value       = var.app_password
-}
 
 resource "aws_ssm_parameter" "session_secret" {
   name        = "/${var.project_name}/SESSION_SECRET"

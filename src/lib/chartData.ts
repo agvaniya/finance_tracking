@@ -49,11 +49,14 @@ export function sampleDailySeries(
  * Daily step-sampled history for the trend chart: each day carries the last
  * recorded value forward, so the lines reflect "what we knew" between updates.
  */
-export async function getTrendData(days = 90): Promise<{ rows: TrendRow[]; series: TrendSeries[] }> {
+export async function getTrendData(
+  userId: string,
+  days = 90
+): Promise<{ rows: TrendRow[]; series: TrendSeries[] }> {
   const [cards, cardHistories, checkingHistory] = await Promise.all([
-    getCardsWithState(),
-    getCardHistories(),
-    getCheckingHistory(),
+    getCardsWithState(userId),
+    getCardHistories(userId),
+    getCheckingHistory(userId),
   ]);
 
   const today = new Date();

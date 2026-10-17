@@ -10,6 +10,7 @@ import {
   UpdateCheckingButton,
 } from "@/components/forms";
 import { EmptyState, Money, Panel, cx } from "@/components/ui";
+import { requireUserId } from "@/lib/auth";
 import { sampleDailySeries } from "@/lib/chartData";
 import { CHECKING_COLOR } from "@/lib/colors";
 import {
@@ -33,13 +34,14 @@ import {
 export const dynamic = "force-dynamic";
 
 export default async function CheckingPage() {
+  const userId = await requireUserId();
   const [checking, history, cards, incomes, expenses, adjustments] = await Promise.all([
-    getCheckingAccount(),
-    getCheckingHistory(),
-    getCardsWithState(),
-    getIncomes(),
-    getExpenses(),
-    getExpenseAdjustments(),
+    getCheckingAccount(userId),
+    getCheckingHistory(userId),
+    getCardsWithState(userId),
+    getIncomes(userId),
+    getExpenses(userId),
+    getExpenseAdjustments(userId),
   ]);
 
   const forecast = buildForecast(

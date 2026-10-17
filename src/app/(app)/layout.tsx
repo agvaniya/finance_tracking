@@ -1,12 +1,16 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
-import { logout } from "@/lib/actions";
-import { requireSession } from "@/lib/auth";
+import { signOut } from "@/lib/accountActions";
+import { getSessionUser } from "@/lib/auth";
 import { NavLinks } from "@/components/NavLinks";
+import { UserMenu } from "@/components/accountForms";
 import { Wordmark } from "@/components/Wordmark";
 
 export default async function AppLayout({ children }: { children: ReactNode }) {
-  await requireSession();
+  const user = await getSessionUser();
+  if (!user) redirect("/login");
+
   return (
     <div className="flex min-h-screen flex-col">
       <header className="sticky top-0 z-40 border-b border-hairline bg-surface/90 backdrop-blur">
@@ -16,14 +20,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           </Link>
           <div className="flex items-center gap-2">
             <NavLinks />
-            <form action={logout}>
-              <button
-                type="submit"
-                className="rounded-lg px-3 py-1.5 text-sm font-medium text-muted transition-colors hover:bg-page hover:text-ink"
-              >
-                Sign out
-              </button>
-            </form>
+            <UserMenu username={user.username} signOutAction={signOut} />
           </div>
         </div>
       </header>

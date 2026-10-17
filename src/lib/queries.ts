@@ -12,9 +12,12 @@ export interface CardWithState {
   current: CardState | null;
 }
 
-export async function getCardsWithState(includeArchived = false): Promise<CardWithState[]> {
+export async function getCardsWithState(
+  userId: string,
+  includeArchived = false
+): Promise<CardWithState[]> {
   const cards = await prisma.creditCard.findMany({
-    where: includeArchived ? {} : { archivedAt: null },
+    where: { userId, ...(includeArchived ? {} : { archivedAt: null }) },
     orderBy: { createdAt: "asc" },
     include: { balanceUpdates: { orderBy: { recordedAt: "desc" }, take: 1 } },
   });
@@ -30,9 +33,10 @@ export async function getCardsWithState(includeArchived = false): Promise<CardWi
   }));
 }
 
-export async function getCard(cardId: string) {
-  return prisma.creditCard.findUnique({
-    where: { id: cardId },
+/** Returns null when the card belongs to someone else, so callers 404. */
+export async function getCard(userId: string, cardId: string) {
+  return prisma.creditCard.findFirst({
+    where: { id: cardId, userId },
     include: {
       balanceUpdates: { orderBy: { recordedAt: "desc" } },
       payments: { orderBy: { paidAt: "desc" } },
@@ -41,8 +45,9 @@ export async function getCard(cardId: string) {
 }
 
 /** The single checking account, created lazily on first use. */
-export async function getCheckingAccount() {
+export async function getCheckingAccount(userId: string) {
   const account = await prisma.checkingAccount.findFirst({
+    where: { userId },
     include: { updates: { orderBy: { recordedAt: "desc" }, take: 1 } },
   });
   if (!account) return null;
@@ -50,47 +55,50 @@ export async function getCheckingAccount() {
   return { account: rest, latest: updates[0] ?? null };
 }
 
-export async function getIncomes(includeInactive = true) {
-  const account = await prisma.checkingAccount.findFirst();
-  if (!account) return [];
+export async function getIncomes(userId: string, includeInactive = true) {
   return prisma.recurringIncome.findMany({
-    where: { accountId: account.id, ...(includeInactive ? {} : { active: true }) },
+    where: { account: { userId }, ...(includeInactive ? {} : { active: true }) },
     orderBy: [{ active: "desc" }, { createdAt: "asc" }],
   });
 }
 
-export async function getExpenses(includeInactive = true) {
-  const account = await prisma.checkingAccount.findFirst();
-  if (!account) return [];
+export async function getExpenses(userId: string, includeInactive = true) {
   return prisma.recurringExpense.findMany({
-    where: { accountId: account.id, ...(includeInactive ? {} : { active: true }) },
+    where: { account: { userId }, ...(includeInactive ? {} : { active: true }) },
     orderBy: [{ active: "desc" }, { createdAt: "asc" }],
   });
 }
 
 /** Corrections from a little before today, so the drift window can use them. */
-export async function getExpenseAdjustments(sinceDays = 120) {
+export async function getExpenseAdjustments(userId: string, sinceDays = 120) {
   return prisma.expenseAdjustment.findMany({
-    where: { dueDate: { gte: new Date(Date.now() - sinceDays * 86_400_000) } },
+    where: {
+      expense: { account: { userId } },
+      dueDate: { gte: new Date(Date.now() - sinceDays * 86_400_000) },
+    },
   });
 }
 
-export async function getCheckingHistory(days?: number): Promise<CheckingBalanceUpdate[]> {
-  const account = await prisma.checkingAccount.findFirst();
-  if (!account) return [];
+export async function getCheckingHistory(
+  userId: string,
+  days?: number
+): Promise<CheckingBalanceUpdate[]> {
   return prisma.checkingBalanceUpdate.findMany({
     where: {
-      accountId: account.id,
+      account: { userId },
       ...(days ? { recordedAt: { gte: new Date(Date.now() - days * 86_400_000) } } : {}),
     },
     orderBy: { recordedAt: "asc" },
   });
 }
 
-export async function getCardHistories(days?: number): Promise<Map<string, CardBalanceUpdate[]>> {
+export async function getCardHistories(
+  userId: string,
+  days?: number
+): Promise<Map<string, CardBalanceUpdate[]>> {
   const updates = await prisma.cardBalanceUpdate.findMany({
     where: {
-      card: { archivedAt: null },
+      card: { userId, archivedAt: null },
       ...(days ? { recordedAt: { gte: new Date(Date.now() - days * 86_400_000) } } : {}),
     },
     orderBy: { recordedAt: "asc" },
@@ -115,20 +123,22 @@ export interface ActivityItem {
 }
 
 /** Merged recent activity across cards and checking, newest first. */
-export async function getRecentActivity(limit = 12): Promise<ActivityItem[]> {
+export async function getRecentActivity(userId: string, limit = 12): Promise<ActivityItem[]> {
   const [cardUpdates, payments, checkingUpdates] = await Promise.all([
     prisma.cardBalanceUpdate.findMany({
-      where: { kind: "SNAPSHOT" },
+      where: { kind: "SNAPSHOT", card: { userId } },
       orderBy: { recordedAt: "desc" },
       take: limit,
       include: { card: true },
     }),
     prisma.cardPayment.findMany({
+      where: { card: { userId } },
       orderBy: { paidAt: "desc" },
       take: limit,
       include: { card: true },
     }),
     prisma.checkingBalanceUpdate.findMany({
+      where: { account: { userId } },
       orderBy: { recordedAt: "desc" },
       take: limit,
       include: { account: true },
