@@ -4,7 +4,7 @@ import { DistributionDonut, ProjectionChart, TrendChart } from "@/components/cha
 import { MonthCalendar } from "@/components/Calendar";
 import { Dot, EmptyState, Money, Panel, cx } from "@/components/ui";
 import { getTrendData } from "@/lib/chartData";
-import { CHECKING_COLOR, seriesColor } from "@/lib/colors";
+import { CHECKING_COLOR, STATUS, seriesColor } from "@/lib/colors";
 import { getMonthEvents } from "@/lib/events";
 import { formatCents } from "@/lib/money";
 import { SAFETY_BUFFER, buildForecast, toISODate } from "@/lib/predictions";
@@ -12,6 +12,9 @@ import {
   getCardsWithState,
   getCheckingAccount,
   getCheckingHistory,
+  getExpenseAdjustments,
+  getExpenses,
+  getIncomes,
   getRecentActivity,
 } from "@/lib/queries";
 
@@ -51,20 +54,28 @@ export default async function DashboardPage({
 }) {
   const { month } = await searchParams;
 
-  const [cards, checking, checkingHistory, trend, activity] = await Promise.all([
-    getCardsWithState(),
-    getCheckingAccount(),
-    getCheckingHistory(),
-    getTrendData(90),
-    getRecentActivity(10),
-  ]);
+  const [cards, checking, checkingHistory, trend, activity, incomes, expenses, adjustments] =
+    await Promise.all([
+      getCardsWithState(),
+      getCheckingAccount(),
+      getCheckingHistory(),
+      getTrendData(90),
+      getRecentActivity(10),
+      getIncomes(),
+      getExpenses(),
+      getExpenseAdjustments(),
+    ]);
 
   const forecast = buildForecast(
     checkingHistory.map((u) => ({ balance: u.balance, recordedAt: u.recordedAt })),
-    cards
+    cards,
+    incomes,
+    { expenses, adjustments }
   );
 
   const now = new Date();
+  // Bills corrected to $0 are only listed on the checking page, where they can be reset.
+  const upcomingBills = forecast.expenses.filter((b) => !b.skipped);
   const [calYear, calMonth] = /^\d{4}-\d{2}$/.test(month ?? "")
     ? [Number(month!.slice(0, 4)), Number(month!.slice(5)) - 1]
     : [now.getFullYear(), now.getMonth()];
@@ -139,7 +150,12 @@ export default async function DashboardPage({
         </div>
       )}
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div
+        className={cx(
+          "grid gap-3 sm:grid-cols-2",
+          forecast.incomeTotalThisMonth > 0 ? "lg:grid-cols-5" : "lg:grid-cols-4"
+        )}
+      >
         <StatTile
           label="Checking balance"
           cents={checking?.latest?.balance ?? null}
@@ -163,6 +179,14 @@ export default async function DashboardPage({
               : "No auto pays remaining"
           }
         />
+        {forecast.incomeTotalThisMonth > 0 && (
+          <StatTile
+            label="Income still to come"
+            cents={forecast.incomeTotalThisMonth}
+            tone="good"
+            sub={`Scheduled before ${endOfMonthLabel}`}
+          />
+        )}
         <StatTile
           label="Payoff headroom"
           cents={forecast.payoffCapacity}
@@ -182,14 +206,22 @@ export default async function DashboardPage({
           <Panel
             title="The month ahead"
             aside={
-              forecast.driftWindowDays > 0
-                ? `Projected from ${forecast.driftWindowDays} days of history (${formatCents(forecast.dailyDrift)}/day net)`
-                : "Record checking balances to enable projections"
+              forecast.driftWindowDays === 0
+                ? "Record checking balances to enable projections"
+                : forecast.hasSchedules
+                  ? `${formatCents(forecast.baselineDailyDrift)}/day spending, plus scheduled income and bills`
+                  : `Projected from ${forecast.driftWindowDays} days of history (${formatCents(forecast.dailyDrift)}/day net)`
             }
           >
             {forecast.points.length > 0 ? (
               <div className="grid gap-6 lg:grid-cols-[1fr_230px]">
-                <ProjectionChart points={forecast.points} autoPays={forecast.autoPays} buffer={SAFETY_BUFFER} />
+                <ProjectionChart
+                  points={forecast.points}
+                  autoPays={forecast.autoPays}
+                  incomes={forecast.incomes}
+                  expenses={forecast.expenses}
+                  buffer={SAFETY_BUFFER}
+                />
                 <div className="space-y-4 lg:border-l lg:border-hairline lg:pl-6">
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-wide text-muted">Expected on {endOfMonthLabel}</p>
@@ -206,6 +238,51 @@ export default async function DashboardPage({
                           on {format(new Date(`${forecast.lowestPoint.dateISO}T00:00:00`), "MMM d")}
                         </span>
                       </p>
+                    </div>
+                  )}
+                  {forecast.incomes.length > 0 && (
+                    <div>
+                      <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">Upcoming income</p>
+                      <ul className="space-y-1.5">
+                        {forecast.incomes.slice(0, 4).map((income) => (
+                          <li key={`${income.incomeId}-${income.dateISO}`} className="flex items-center justify-between gap-2 text-sm">
+                            <span className="flex min-w-0 items-center gap-1.5 text-ink-2">
+                              <Dot color={STATUS.goodText} />
+                              <span className="truncate">{income.name}</span>
+                              <span className="shrink-0 text-xs text-muted">
+                                {format(new Date(`${income.dateISO}T00:00:00`), "MMM d")}
+                              </span>
+                            </span>
+                            <Money cents={income.amount} signed className="shrink-0 text-good-text" />
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {upcomingBills.length > 0 && (
+                    <div>
+                      <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">Upcoming bills</p>
+                      <ul className="space-y-1.5">
+                        {upcomingBills.slice(0, 4).map((bill) => (
+                          <li key={`${bill.expenseId}-${bill.dateISO}`} className="flex items-center justify-between gap-2 text-sm">
+                            <span className="flex min-w-0 items-center gap-1.5 text-ink-2">
+                              <span aria-hidden className="shrink-0 text-ink-2">
+                                <svg width="8" height="8" viewBox="0 0 8 8">
+                                  <path d="M4 7.5 L0.5 1 L7.5 1 Z" fill="currentColor" />
+                                </svg>
+                              </span>
+                              <span className="truncate">{bill.name}</span>
+                              <span className="shrink-0 text-xs text-muted">
+                                {format(new Date(`${bill.dateISO}T00:00:00`), "MMM d")}
+                              </span>
+                              {bill.estimated && !bill.adjusted && (
+                                <span className="shrink-0 text-[10px] uppercase text-muted">est</span>
+                              )}
+                            </span>
+                            <Money cents={bill.amount} className="shrink-0 text-ink" />
+                          </li>
+                        ))}
+                      </ul>
                     </div>
                   )}
                   <div>

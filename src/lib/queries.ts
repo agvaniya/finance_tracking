@@ -50,6 +50,31 @@ export async function getCheckingAccount() {
   return { account: rest, latest: updates[0] ?? null };
 }
 
+export async function getIncomes(includeInactive = true) {
+  const account = await prisma.checkingAccount.findFirst();
+  if (!account) return [];
+  return prisma.recurringIncome.findMany({
+    where: { accountId: account.id, ...(includeInactive ? {} : { active: true }) },
+    orderBy: [{ active: "desc" }, { createdAt: "asc" }],
+  });
+}
+
+export async function getExpenses(includeInactive = true) {
+  const account = await prisma.checkingAccount.findFirst();
+  if (!account) return [];
+  return prisma.recurringExpense.findMany({
+    where: { accountId: account.id, ...(includeInactive ? {} : { active: true }) },
+    orderBy: [{ active: "desc" }, { createdAt: "asc" }],
+  });
+}
+
+/** Corrections from a little before today, so the drift window can use them. */
+export async function getExpenseAdjustments(sinceDays = 120) {
+  return prisma.expenseAdjustment.findMany({
+    where: { dueDate: { gte: new Date(Date.now() - sinceDays * 86_400_000) } },
+  });
+}
+
 export async function getCheckingHistory(days?: number): Promise<CheckingBalanceUpdate[]> {
   const account = await prisma.checkingAccount.findFirst();
   if (!account) return [];

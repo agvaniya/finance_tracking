@@ -1,18 +1,45 @@
 "use client";
 
-import { useActionState, useEffect, useId, useRef, useState, type ReactNode } from "react";
-import type { CreditCard } from "@prisma/client";
 import {
+  useActionState,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  useTransition,
+  type ReactNode,
+} from "react";
+import type { CreditCard, RecurringExpense, RecurringIncome } from "@prisma/client";
+import { format } from "date-fns";
+import {
+  adjustBill,
+  clearBillAdjustment,
   createCard,
+  createExpense,
+  createIncome,
+  deleteExpense,
+  deleteIncome,
   login,
   recordCardBalance,
   recordPayment,
   renameChecking,
+  setExpenseActive,
+  setIncomeActive,
   updateCard,
   updateChecking,
+  updateExpense,
+  updateIncome,
   type ActionState,
 } from "@/lib/actions";
-import { AUTO_PAY_LABELS, AUTO_PAY_TYPES, type AutoPayType } from "@/lib/domain";
+import {
+  AUTO_PAY_LABELS,
+  AUTO_PAY_TYPES,
+  SCHEDULE_FREQUENCIES,
+  SCHEDULE_FREQUENCY_LABELS,
+  usesDayOfMonth,
+  type AutoPayType,
+  type ScheduleFrequency,
+} from "@/lib/domain";
 import { buttonStyles, cx } from "./ui";
 
 // ---------- shared field primitives ----------
@@ -378,6 +405,345 @@ export function UpdateCheckingButton({
             <Field label="Reason for change" hint="e.g. Salary deposited, gift received, refund issued.">
               <input name="reason" placeholder="Optional" className={inputClass} />
             </Field>
+          </DialogForm>
+        </DialogShell>
+      )}
+    </>
+  );
+}
+
+// ---------- recurring schedules (shared by income and expenses) ----------
+
+interface ScheduleShape {
+  name: string;
+  amount: number;
+  frequency: string;
+  dayOfMonth: number | null;
+  secondDayOfMonth: number | null;
+}
+
+/**
+ * yyyy-mm-dd values for the date inputs, formatted on the server (see
+ * scheduleDateInputs) so they match how the actions parse them.
+ */
+export interface ScheduleDates {
+  anchorDateISO: string | null;
+  startDateISO: string | null;
+}
+
+function ScheduleFields({
+  schedule,
+  dates,
+  nameLabel,
+  namePlaceholder,
+  amountLabel,
+  amountHint,
+  defaultFrequency,
+}: {
+  schedule?: ScheduleShape;
+  dates?: ScheduleDates;
+  nameLabel: string;
+  namePlaceholder: string;
+  amountLabel: string;
+  amountHint: string;
+  defaultFrequency: ScheduleFrequency;
+}) {
+  const [frequency, setFrequency] = useState<ScheduleFrequency>(
+    (schedule?.frequency as ScheduleFrequency) ?? defaultFrequency
+  );
+  // A new schedule defaults to the browser's own today, not the UTC date.
+  const anchorDefault = dates?.anchorDateISO ?? format(new Date(), "yyyy-MM-dd");
+  const dayLabel = frequency === "SEMI_MONTHLY" ? "First day of month" : "Day of month";
+
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label={nameLabel} hint="Shown on the calendar and forecast.">
+          <input name="name" required defaultValue={schedule?.name} placeholder={namePlaceholder} className={inputClass} />
+        </Field>
+        <Field label={amountLabel} hint={amountHint}>
+          <MoneyInput name="amount" required defaultCents={schedule?.amount} />
+        </Field>
+      </div>
+
+      <Field label="How often">
+        <select
+          name="frequency"
+          value={frequency}
+          onChange={(e) => setFrequency(e.target.value as ScheduleFrequency)}
+          className={inputClass}
+        >
+          {SCHEDULE_FREQUENCIES.map((f) => (
+            <option key={f} value={f}>
+              {SCHEDULE_FREQUENCY_LABELS[f]}
+            </option>
+          ))}
+        </select>
+      </Field>
+
+      {usesDayOfMonth(frequency) ? (
+        <div className="grid grid-cols-2 gap-3">
+          <Field label={dayLabel} hint="Days past a month's end shift to the last day.">
+            <input
+              type="number"
+              name="dayOfMonth"
+              min={1}
+              max={31}
+              required
+              defaultValue={schedule?.dayOfMonth ?? 1}
+              className={cx(inputClass, "money")}
+            />
+          </Field>
+          {frequency === "SEMI_MONTHLY" && (
+            <Field label="Second day of month">
+              <input
+                type="number"
+                name="secondDayOfMonth"
+                min={1}
+                max={31}
+                required
+                defaultValue={schedule?.secondDayOfMonth ?? 15}
+                className={cx(inputClass, "money")}
+              />
+            </Field>
+          )}
+        </div>
+      ) : (
+        <Field label="Most recent date" hint="The cycle repeats from this date.">
+          <input type="date" name="anchorDate" required defaultValue={anchorDefault} className={inputClass} />
+        </Field>
+      )}
+
+      <Field
+        label="First payment (optional)"
+        hint="Only if it has not started yet. Leave blank for one already running."
+      >
+        <input type="date" name="startDate" defaultValue={dates?.startDateISO ?? ""} className={inputClass} />
+      </Field>
+    </>
+  );
+}
+
+// ---------- recurring income ----------
+
+function IncomeFields({ income, dates }: { income?: RecurringIncome; dates?: ScheduleDates }) {
+  return (
+    <ScheduleFields
+      schedule={income}
+      dates={dates}
+      nameLabel="Name"
+      namePlaceholder="Acme Corp salary"
+      amountLabel="Amount per payment"
+      amountHint="Take-home, after deductions."
+      defaultFrequency="SEMI_MONTHLY"
+    />
+  );
+}
+
+export function AddIncomeButton({ variant = "secondary" }: { variant?: keyof typeof buttonStyles }) {
+  const d = useDialog();
+  return (
+    <>
+      <button type="button" onClick={d.show} className={buttonStyles[variant]}>
+        Add income
+      </button>
+      {d.open && (
+        <DialogShell key={d.key} title="Add recurring income" onClose={d.hide}>
+          <DialogForm action={createIncome} submitLabel="Add income" onDone={d.hide}>
+            <IncomeFields />
+          </DialogForm>
+        </DialogShell>
+      )}
+    </>
+  );
+}
+
+export function EditIncomeButton({ income, dates }: { income: RecurringIncome; dates: ScheduleDates }) {
+  const d = useDialog();
+  return (
+    <>
+      <button type="button" onClick={d.show} className={buttonStyles.ghost}>
+        Edit
+      </button>
+      {d.open && (
+        <DialogShell key={d.key} title={`Edit ${income.name}`} onClose={d.hide}>
+          <DialogForm action={updateIncome.bind(null, income.id)} submitLabel="Save changes" onDone={d.hide}>
+            <IncomeFields income={income} dates={dates} />
+          </DialogForm>
+        </DialogShell>
+      )}
+    </>
+  );
+}
+
+export function IncomeRowActions({ income, dates }: { income: RecurringIncome; dates: ScheduleDates }) {
+  const [pending, startTransition] = useTransition();
+  return (
+    <span className="flex items-center gap-0.5">
+      <EditIncomeButton income={income} dates={dates} />
+      <button
+        type="button"
+        disabled={pending}
+        className={buttonStyles.ghost}
+        onClick={() => startTransition(() => setIncomeActive(income.id, !income.active))}
+      >
+        {income.active ? "Pause" : "Resume"}
+      </button>
+      <button
+        type="button"
+        disabled={pending}
+        className={cx(buttonStyles.ghost, "text-critical hover:bg-critical-wash")}
+        onClick={() => {
+          if (window.confirm(`Remove ${income.name} from the forecast?`)) {
+            startTransition(() => deleteIncome(income.id));
+          }
+        }}
+      >
+        Remove
+      </button>
+    </span>
+  );
+}
+
+// ---------- recurring expenses ----------
+
+function ExpenseFields({ expense, dates }: { expense?: RecurringExpense; dates?: ScheduleDates }) {
+  return (
+    <>
+      <ScheduleFields
+        schedule={expense}
+        dates={dates}
+        nameLabel="Name"
+        namePlaceholder="Rent"
+        amountLabel="Amount each time"
+        amountHint="What you expect to pay."
+        defaultFrequency="MONTHLY"
+      />
+      <label className="flex items-start gap-2.5 rounded-lg border border-hairline bg-page/60 px-3 py-2.5">
+        <input
+          type="checkbox"
+          name="estimated"
+          defaultChecked={expense?.estimated ?? false}
+          className="mt-0.5 size-4 accent-[#104281]"
+        />
+        <span className="text-sm text-ink-2">
+          This amount varies — treat it as an estimate I will correct when the
+          bill arrives
+        </span>
+      </label>
+    </>
+  );
+}
+
+export function AddExpenseButton({ variant = "secondary" }: { variant?: keyof typeof buttonStyles }) {
+  const d = useDialog();
+  return (
+    <>
+      <button type="button" onClick={d.show} className={buttonStyles[variant]}>
+        Add expense
+      </button>
+      {d.open && (
+        <DialogShell key={d.key} title="Add a scheduled expense" onClose={d.hide}>
+          <DialogForm action={createExpense} submitLabel="Add expense" onDone={d.hide}>
+            <ExpenseFields />
+          </DialogForm>
+        </DialogShell>
+      )}
+    </>
+  );
+}
+
+export function ExpenseRowActions({ expense, dates }: { expense: RecurringExpense; dates: ScheduleDates }) {
+  const edit = useDialog();
+  const [pending, startTransition] = useTransition();
+  return (
+    <span className="flex items-center gap-0.5">
+      <button type="button" onClick={edit.show} className={buttonStyles.ghost}>
+        Edit
+      </button>
+      {edit.open && (
+        <DialogShell key={edit.key} title={`Edit ${expense.name}`} onClose={edit.hide}>
+          <DialogForm action={updateExpense.bind(null, expense.id)} submitLabel="Save changes" onDone={edit.hide}>
+            <ExpenseFields expense={expense} dates={dates} />
+          </DialogForm>
+        </DialogShell>
+      )}
+      <button
+        type="button"
+        disabled={pending}
+        className={buttonStyles.ghost}
+        onClick={() => startTransition(() => setExpenseActive(expense.id, !expense.active))}
+      >
+        {expense.active ? "Pause" : "Resume"}
+      </button>
+      <button
+        type="button"
+        disabled={pending}
+        className={cx(buttonStyles.ghost, "text-critical hover:bg-critical-wash")}
+        onClick={() => {
+          if (window.confirm(`Remove ${expense.name} from the forecast?`)) {
+            startTransition(() => deleteExpense(expense.id));
+          }
+        }}
+      >
+        Remove
+      </button>
+    </span>
+  );
+}
+
+/** Replaces one occurrence's amount with the real bill. */
+export function AdjustBillButton({
+  expenseId,
+  expenseName,
+  dueDateISO,
+  currentAmount,
+  adjusted,
+}: {
+  expenseId: string;
+  expenseName: string;
+  dueDateISO: string;
+  currentAmount: number;
+  adjusted: boolean;
+}) {
+  const d = useDialog();
+  const [pending, startTransition] = useTransition();
+  const due = new Date(`${dueDateISO}T00:00:00`).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
+
+  return (
+    <>
+      <button type="button" onClick={d.show} className={buttonStyles.ghost}>
+        {adjusted ? "Change" : "Enter actual"}
+      </button>
+      {adjusted && (
+        <button
+          type="button"
+          disabled={pending}
+          className={buttonStyles.ghost}
+          onClick={() => startTransition(() => clearBillAdjustment(expenseId, dueDateISO))}
+        >
+          Reset
+        </button>
+      )}
+      {d.open && (
+        <DialogShell key={d.key} title={`${expenseName} due ${due}`} onClose={d.hide}>
+          <DialogForm
+            action={adjustBill.bind(null, expenseId, dueDateISO)}
+            submitLabel="Save amount"
+            onDone={d.hide}
+          >
+            <Field label="Actual amount" hint="Enter 0 if it will not be charged this time.">
+              <MoneyInput name="amount" required defaultCents={currentAmount} />
+            </Field>
+            <Field label="Note">
+              <input name="note" placeholder="Optional" className={inputClass} />
+            </Field>
+            <p className="text-xs text-muted">
+              This changes only the {due} bill. Later ones keep the scheduled amount.
+            </p>
           </DialogForm>
         </DialogShell>
       )}

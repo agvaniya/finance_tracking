@@ -68,7 +68,91 @@ model CheckingAccount {
   name      String   @default("Checking account")
   createdAt DateTime @default(now())
 
-  updates CheckingBalanceUpdate[]
+  updates  CheckingBalanceUpdate[]
+  incomes  RecurringIncome[]
+  expenses RecurringExpense[]
+}
+
+/// A salary or other income that lands on a repeating schedule. Several may
+/// run at once, each with its own cadence.
+model RecurringIncome {
+  id        String          @id @default(cuid())
+  accountId String
+  account   CheckingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  name   String
+  amount Int // cents received per occurrence (net pay)
+
+  // MONTHLY | SEMI_MONTHLY | BIWEEKLY | WEEKLY — validated in src/lib/domain.ts
+  frequency String
+
+  // MONTHLY and SEMI_MONTHLY pay on fixed days of the month; days past a
+  // month's end are clamped to its last day.
+  dayOfMonth       Int?
+  secondDayOfMonth Int?
+
+  // BIWEEKLY and WEEKLY repeat from a known pay date instead.
+  anchorDate DateTime?
+
+  /// First occurrence, at local midnight. Null means the schedule was already
+  /// running before it was entered, so it also explains recorded history.
+  startDate DateTime?
+
+  active    Boolean   @default(true)
+  /// When it was last paused; history after this is not explained by it.
+  pausedAt  DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([accountId, active])
+}
+
+/// A known outgoing payment on a repeating schedule — rent, a car lease, a
+/// utility bill. `amount` is the expected cost; a bill that varies can be
+/// corrected for a single due date with an ExpenseAdjustment.
+model RecurringExpense {
+  id        String          @id @default(cuid())
+  accountId String
+  account   CheckingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  name   String
+  amount Int // cents expected per occurrence
+
+  /// Marks a bill that varies (utilities), so the UI invites a correction
+  /// once the real figure is known.
+  estimated Boolean @default(false)
+
+  // Same schedule vocabulary as RecurringIncome — see src/lib/domain.ts.
+  frequency        String
+  dayOfMonth       Int?
+  secondDayOfMonth Int?
+  anchorDate       DateTime?
+  startDate        DateTime?
+
+  active    Boolean   @default(true)
+  pausedAt  DateTime?
+  createdAt DateTime  @default(now())
+
+  adjustments ExpenseAdjustment[]
+
+  @@index([accountId, active])
+}
+
+/// Replaces the expected amount for one due date. Set amount to 0 for a month
+/// the bill will not be charged.
+model ExpenseAdjustment {
+  id        String           @id @default(cuid())
+  expenseId String
+  expense   RecurringExpense @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+
+  /// The scheduled occurrence being corrected, at local midnight.
+  dueDate DateTime
+  amount  Int // actual cents
+  note    String?
+
+  createdAt DateTime @default(now())
+
+  @@unique([expenseId, dueDate])
+  @@index([dueDate])
 }
 
 model CheckingBalanceUpdate {

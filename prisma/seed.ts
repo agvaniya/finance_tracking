@@ -27,8 +27,14 @@ const at = (d: Date, hour: number) =>
   new Date(d.getFullYear(), d.getMonth(), d.getDate(), hour, randInt(0, 59));
 
 async function main() {
-  const existing = await prisma.creditCard.count();
-  if (existing > 0 || (await prisma.checkingAccount.count()) > 0) {
+  // Judge "already has data" by actual records, not by the existence of a
+  // checking account: the app creates an empty account shell the first time
+  // income or an expense is added, and that alone should not block seeding.
+  const [cardCount, balanceCount] = await Promise.all([
+    prisma.creditCard.count(),
+    prisma.checkingBalanceUpdate.count(),
+  ]);
+  if (cardCount > 0 || balanceCount > 0) {
     console.log("Database already has data — skipping seed.");
     return;
   }
@@ -38,9 +44,16 @@ async function main() {
   const start = new Date(today.getTime() - 105 * DAY);
 
   // ---- Checking account -------------------------------------------------
-  const account = await prisma.checkingAccount.create({
-    data: { name: "Everyday Checking", createdAt: start },
-  });
+  // Reuse the shell if one exists so the app does not end up with two.
+  const existingAccount = await prisma.checkingAccount.findFirst();
+  const account = existingAccount
+    ? await prisma.checkingAccount.update({
+        where: { id: existingAccount.id },
+        data: { name: "Everyday Checking", createdAt: start },
+      })
+    : await prisma.checkingAccount.create({
+        data: { name: "Everyday Checking", createdAt: start },
+      });
 
   let checking = 420_000; // $4,200.00
   const checkingUpdates: { balance: number; reason: string; recordedAt: Date }[] = [
@@ -89,6 +102,45 @@ async function main() {
   }
   await prisma.checkingBalanceUpdate.createMany({
     data: checkingUpdates.map((u) => ({ ...u, accountId: account.id })),
+  });
+
+  // Matches the salary pattern generated above, so the forecast's baseline
+  // spending rate reconciles with the recorded history.
+  await prisma.recurringIncome.create({
+    data: {
+      accountId: account.id,
+      name: "Acme Corp salary",
+      amount: 340_000,
+      frequency: "SEMI_MONTHLY",
+      dayOfMonth: 1,
+      secondDayOfMonth: 15,
+      createdAt: start,
+    },
+  });
+
+  // Rent matches the history above; the utility bill is deliberately an
+  // estimate so the "enter the actual amount" flow has something to act on.
+  await prisma.recurringExpense.createMany({
+    data: [
+      {
+        accountId: account.id,
+        name: "Rent",
+        amount: 210_000,
+        estimated: false,
+        frequency: "MONTHLY",
+        dayOfMonth: 2,
+        createdAt: start,
+      },
+      {
+        accountId: account.id,
+        name: "Electricity",
+        amount: 14_500,
+        estimated: true,
+        frequency: "MONTHLY",
+        dayOfMonth: 20,
+        createdAt: start,
+      },
+    ],
   });
 
   // ---- Credit cards ------------------------------------------------------

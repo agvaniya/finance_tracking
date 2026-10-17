@@ -19,7 +19,12 @@ import {
 } from "recharts";
 import { CHART_CHROME, STATUS } from "@/lib/colors";
 import { formatCents, formatCentsCompact } from "@/lib/money";
-import type { ForecastAutoPay, ForecastPoint } from "@/lib/predictions";
+import type {
+  ForecastAutoPay,
+  ForecastExpense,
+  ForecastIncome,
+  ForecastPoint,
+} from "@/lib/predictions";
 import type { TrendRow, TrendSeries } from "@/lib/chartData";
 
 const axisTick = { fill: CHART_CHROME.muted, fontSize: 11 } as const;
@@ -217,13 +222,26 @@ export function DistributionDonut({ slices, centerLabel }: { slices: DonutSlice[
 export function ProjectionChart({
   points,
   autoPays,
+  incomes = [],
+  expenses = [],
   buffer,
 }: {
   points: ForecastPoint[];
   autoPays: ForecastAutoPay[];
+  incomes?: ForecastIncome[];
+  expenses?: ForecastExpense[];
   buffer: number;
 }) {
+  const expenseByDate = new Map<string, ForecastExpense[]>();
+  for (const e of expenses) {
+    if (e.skipped) continue;
+    expenseByDate.set(e.dateISO, [...(expenseByDate.get(e.dateISO) ?? []), e]);
+  }
   const byDate = new Map(autoPays.map((a) => [a.dateISO, a] as const));
+  const incomeByDate = new Map<string, ForecastIncome[]>();
+  for (const i of incomes) {
+    incomeByDate.set(i.dateISO, [...(incomeByDate.get(i.dateISO) ?? []), i]);
+  }
   const min = Math.min(0, ...points.map((p) => p.balance));
   const eventColor = (s: ForecastAutoPay["severity"]) =>
     s === "overdraft" ? STATUS.critical : s === "tight" ? STATUS.warning : "#104281";
@@ -262,21 +280,31 @@ export function ProjectionChart({
                 const { active, payload, label } = props as TooltipContentView;
                 if (!active || !payload?.length) return null;
                 const event = byDate.get(String(label));
+                const paydays = incomeByDate.get(String(label)) ?? [];
+                const bills = expenseByDate.get(String(label)) ?? [];
+                const notes = [
+                  ...paydays.map((p) => `${p.name} ${formatCents(p.amount, { signed: true })}`),
+                  ...bills.map(
+                    (b) =>
+                      `${b.name} −${formatCents(b.amount)}${b.estimated && !b.adjusted ? " (est)" : ""}`
+                  ),
+                  ...(event
+                    ? [
+                        `${event.cardName} auto pay ${formatCents(event.amount)}${
+                          event.severity === "overdraft"
+                            ? " — overdraws the account"
+                            : event.severity === "tight"
+                              ? " — dips below the buffer"
+                              : ""
+                        }`,
+                      ]
+                    : []),
+                ];
                 return (
                   <ChartTooltip
                     title={dateTick(String(label))}
                     rows={[{ color: "#104281", name: "Projected checking", value: Number(payload[0].value) }]}
-                    footer={
-                      event
-                        ? `${event.cardName} auto pay ${formatCents(event.amount)}${
-                            event.severity === "overdraft"
-                              ? " — overdraws the account"
-                              : event.severity === "tight"
-                                ? " — dips below the buffer"
-                                : ""
-                          }`
-                        : undefined
-                    }
+                    footer={notes.length > 0 ? notes.join(" · ") : undefined}
                   />
                 );
               }}
@@ -293,6 +321,21 @@ export function ProjectionChart({
               dot={false}
               isAnimationActive={false}
             />
+            {[...incomeByDate.keys()].map((dateISO) => {
+              const point = points.find((p) => p.dateISO === dateISO);
+              if (!point) return null;
+              return (
+                <ReferenceDot
+                  key={`income-${dateISO}`}
+                  x={dateISO}
+                  y={point.balance}
+                  r={5}
+                  fill={STATUS.goodText}
+                  stroke="var(--surface)"
+                  strokeWidth={2}
+                />
+              );
+            })}
             {autoPays.map((a) => {
               const point = points.find((p) => p.dateISO === a.dateISO);
               if (!point) return null;
@@ -312,6 +355,11 @@ export function ProjectionChart({
         </ResponsiveContainer>
       </div>
       <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-2">
+        {incomes.length > 0 && (
+          <span className="flex items-center gap-1.5">
+            <span className="size-2 rounded-full" style={{ backgroundColor: STATUS.goodText }} /> Payday
+          </span>
+        )}
         <span className="flex items-center gap-1.5">
           <span className="size-2 rounded-full bg-[#104281]" /> Auto pay scheduled
         </span>

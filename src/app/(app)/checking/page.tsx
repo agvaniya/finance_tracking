@@ -1,26 +1,62 @@
 import { format, formatDistanceToNow } from "date-fns";
 import { TrendChart } from "@/components/charts";
-import { RenameCheckingButton, UpdateCheckingButton } from "@/components/forms";
+import {
+  AddExpenseButton,
+  AddIncomeButton,
+  AdjustBillButton,
+  ExpenseRowActions,
+  IncomeRowActions,
+  RenameCheckingButton,
+  UpdateCheckingButton,
+} from "@/components/forms";
 import { EmptyState, Money, Panel, cx } from "@/components/ui";
 import { sampleDailySeries } from "@/lib/chartData";
 import { CHECKING_COLOR } from "@/lib/colors";
+import {
+  SCHEDULE_FREQUENCY_LABELS,
+  monthlyEquivalent,
+  nextOccurrenceDate,
+  scheduleDateInputs,
+  type ScheduleFrequency,
+} from "@/lib/domain";
 import { formatCents } from "@/lib/money";
 import { buildForecast } from "@/lib/predictions";
-import { getCardsWithState, getCheckingAccount, getCheckingHistory } from "@/lib/queries";
+import {
+  getCardsWithState,
+  getCheckingAccount,
+  getCheckingHistory,
+  getExpenseAdjustments,
+  getExpenses,
+  getIncomes,
+} from "@/lib/queries";
 
 export const dynamic = "force-dynamic";
 
 export default async function CheckingPage() {
-  const [checking, history, cards] = await Promise.all([
+  const [checking, history, cards, incomes, expenses, adjustments] = await Promise.all([
     getCheckingAccount(),
     getCheckingHistory(),
     getCardsWithState(),
+    getIncomes(),
+    getExpenses(),
+    getExpenseAdjustments(),
   ]);
 
   const forecast = buildForecast(
     history.map((u) => ({ balance: u.balance, recordedAt: u.recordedAt })),
-    cards
+    cards,
+    incomes,
+    { expenses, adjustments }
   );
+  const now = new Date();
+  // The rate the projection actually walks forward with.
+  const projectedDrift = forecast.hasSchedules ? forecast.baselineDailyDrift : forecast.dailyDrift;
+  const monthlyIncome = incomes
+    .filter((i) => i.active)
+    .reduce((sum, i) => sum + monthlyEquivalent(i), 0);
+  const monthlyExpense = expenses
+    .filter((e) => e.active)
+    .reduce((sum, e) => sum + monthlyEquivalent(e), 0);
 
   const rows = sampleDailySeries(
     { balance: history.map((u) => ({ t: u.recordedAt.getTime(), v: u.balance })) },
@@ -67,10 +103,14 @@ export default async function CheckingPage() {
             tone: change30 != null ? (change30 >= 0 ? "good" : "bad") : undefined,
           },
           {
-            label: "Net per day",
-            value: forecast.driftWindowDays > 0 ? formatCents(forecast.dailyDrift, { signed: true }) : "—",
-            sub: forecast.driftWindowDays > 0 ? `From ${forecast.driftWindowDays} days of history` : undefined,
-            tone: forecast.driftWindowDays > 0 ? (forecast.dailyDrift >= 0 ? "good" : "bad") : undefined,
+            label: forecast.hasSchedules ? "Spending per day" : "Net per day",
+            value: forecast.driftWindowDays > 0 ? formatCents(projectedDrift, { signed: true }) : "—",
+            sub: forecast.driftWindowDays > 0
+              ? forecast.hasSchedules
+                ? `Excluding scheduled income and bills, from ${forecast.driftWindowDays} days`
+                : `From ${forecast.driftWindowDays} days of history`
+              : undefined,
+            tone: forecast.driftWindowDays > 0 ? (projectedDrift >= 0 ? "good" : "bad") : undefined,
           },
           {
             label: "Projected month end",
@@ -93,6 +133,165 @@ export default async function CheckingPage() {
           </div>
         ))}
       </div>
+
+      <Panel
+        title="Recurring income"
+        aside={
+          monthlyIncome > 0
+            ? `${formatCents(monthlyIncome)} a month on average`
+            : "Scheduled deposits feed the forecast"
+        }
+      >
+        <div className="space-y-3">
+          {incomes.length === 0 ? (
+            <EmptyState title="No recurring income yet">
+              Add a salary and the forecast switches from a straight line to the
+              real pattern — balance falling between paydays, jumping when you
+              are paid.
+            </EmptyState>
+          ) : (
+            <ul className="divide-y divide-hairline">
+              {incomes.map((income) => {
+                const next = income.active ? nextOccurrenceDate(income, now) : null;
+                return (
+                  <li key={income.id} className="flex flex-wrap items-center justify-between gap-3 py-2.5 first:pt-0">
+                    <span className="min-w-0">
+                      <span className="flex items-center gap-2">
+                        <span className={cx("text-sm font-medium", income.active ? "text-ink" : "text-muted line-through")}>
+                          {income.name}
+                        </span>
+                        {!income.active && (
+                          <span className="rounded-full bg-page px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted">
+                            Paused
+                          </span>
+                        )}
+                      </span>
+                      <span className="block text-xs text-ink-2">
+                        {SCHEDULE_FREQUENCY_LABELS[income.frequency as ScheduleFrequency]}
+                        {" · "}
+                        {formatCents(monthlyEquivalent(income))} a month
+                        {next && <> · next on {format(next, "MMM d")}</>}
+                      </span>
+                    </span>
+                    <span className="flex items-center gap-3">
+                      <Money cents={income.amount} className={cx("text-sm font-medium", income.active ? "text-good-text" : "text-muted")} />
+                      <IncomeRowActions income={income} dates={scheduleDateInputs(income)} />
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          <div className="flex justify-end">
+            <AddIncomeButton />
+          </div>
+        </div>
+      </Panel>
+
+      <Panel
+        title="Scheduled expenses"
+        aside={
+          monthlyExpense > 0
+            ? `${formatCents(monthlyExpense)} a month on average`
+            : "Rent, leases, utilities — anything you know is coming"
+        }
+      >
+        <div className="space-y-3">
+          {expenses.length === 0 ? (
+            <EmptyState title="No scheduled expenses yet">
+              Add the bills you already know about. A bill that varies can be
+              entered as an estimate and corrected once the real one arrives.
+            </EmptyState>
+          ) : (
+            <ul className="divide-y divide-hairline">
+              {expenses.map((expense) => {
+                const next = expense.active ? nextOccurrenceDate(expense, now) : null;
+                return (
+                  <li key={expense.id} className="flex flex-wrap items-center justify-between gap-3 py-2.5 first:pt-0">
+                    <span className="min-w-0">
+                      <span className="flex items-center gap-2">
+                        <span className={cx("text-sm font-medium", expense.active ? "text-ink" : "text-muted line-through")}>
+                          {expense.name}
+                        </span>
+                        {expense.estimated && (
+                          <span className="rounded-full bg-warning-wash px-1.5 py-0.5 text-[10px] font-semibold uppercase text-ink-2">
+                            Estimate
+                          </span>
+                        )}
+                        {!expense.active && (
+                          <span className="rounded-full bg-page px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted">
+                            Paused
+                          </span>
+                        )}
+                      </span>
+                      <span className="block text-xs text-ink-2">
+                        {SCHEDULE_FREQUENCY_LABELS[expense.frequency as ScheduleFrequency]}
+                        {" · "}
+                        {formatCents(monthlyEquivalent(expense))} a month
+                        {next && <> · next on {format(next, "MMM d")}</>}
+                      </span>
+                    </span>
+                    <span className="flex items-center gap-3">
+                      <Money cents={expense.amount} className={cx("text-sm font-medium", expense.active ? "text-ink" : "text-muted")} />
+                      <ExpenseRowActions expense={expense} dates={scheduleDateInputs(expense)} />
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          <div className="flex justify-end">
+            <AddExpenseButton />
+          </div>
+        </div>
+      </Panel>
+
+      {forecast.expenses.length > 0 && (
+        <Panel title="Upcoming bills" aside="Next 45 days">
+          <ul className="divide-y divide-hairline">
+            {forecast.expenses.map((bill) => (
+              <li
+                key={`${bill.expenseId}-${bill.dateISO}`}
+                className="flex flex-wrap items-center justify-between gap-3 py-2.5 first:pt-0"
+              >
+                <span className="min-w-0">
+                  <span className="flex items-center gap-2">
+                    <span className={cx("text-sm font-medium", bill.skipped ? "text-muted line-through" : "text-ink")}>
+                      {bill.name}
+                    </span>
+                    {bill.skipped ? (
+                      <span className="rounded-full bg-page px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted">
+                        Skipped
+                      </span>
+                    ) : bill.adjusted ? (
+                      <span className="rounded-full bg-good-wash px-1.5 py-0.5 text-[10px] font-semibold uppercase text-good-text">
+                        Actual
+                      </span>
+                    ) : bill.estimated ? (
+                      <span className="rounded-full bg-warning-wash px-1.5 py-0.5 text-[10px] font-semibold uppercase text-ink-2">
+                        Estimate
+                      </span>
+                    ) : null}
+                  </span>
+                  <span className="block text-xs text-ink-2">
+                    Due {format(new Date(`${bill.dateISO}T00:00:00`), "EEEE, MMM d")}
+                  </span>
+                </span>
+                <span className="flex items-center gap-3">
+                  <Money cents={bill.amount} className={cx("text-sm font-medium", bill.skipped ? "text-muted" : "text-ink")} />
+                  <AdjustBillButton
+                    expenseId={bill.expenseId}
+                    expenseName={bill.name}
+                    dueDateISO={bill.dateISO}
+                    currentAmount={bill.amount}
+                    adjusted={bill.adjusted}
+                  />
+                </span>
+              </li>
+            ))}
+          </ul>
+        </Panel>
+      )}
 
       <Panel title="Balance history" aside="Last 120 days">
         {history.length > 0 ? (

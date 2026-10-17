@@ -1,5 +1,11 @@
 import { prisma } from "./db";
-import { autoPayDateInMonth } from "./domain";
+import {
+  adjustmentIndex,
+  amountForOccurrence,
+  autoPayDateInMonth,
+  occurrenceKey,
+  scheduleOccurrences,
+} from "./domain";
 import { formatCents } from "./money";
 import { toISODate, type Forecast } from "./predictions";
 
@@ -8,7 +14,9 @@ export type CalendarEventType =
   | "checking-update"
   | "payment"
   | "paid-off"
-  | "autopay";
+  | "autopay"
+  | "payday"
+  | "bill";
 
 export interface CalendarEvent {
   dateISO: string;
@@ -124,6 +132,50 @@ export async function getMonthEvents(
       colorSlot: card.colorSlot,
       severity: projected?.severity ?? "ok",
     });
+  }
+
+  // Scheduled paydays still ahead of us this month.
+  const incomes = await prisma.recurringIncome.findMany({ where: { active: true } });
+  const monthEnd = new Date(year, monthIndex + 1, 0);
+  for (const income of incomes) {
+    for (const date of scheduleOccurrences(income, today > from ? today : from, monthEnd)) {
+      events.push({
+        dateISO: toISODate(date),
+        type: "payday",
+        label: income.name,
+        detail: `${formatCents(income.amount)} expected`,
+        colorSlot: null,
+        severity: "ok",
+      });
+    }
+  }
+
+  // Scheduled bills still ahead of us this month, at their corrected amount
+  // where the real figure has been entered.
+  const expenses = await prisma.recurringExpense.findMany({ where: { active: true } });
+  if (expenses.length > 0) {
+    const adjustments = adjustmentIndex(
+      await prisma.expenseAdjustment.findMany({
+        where: { dueDate: { gte: from, lt: to } },
+      })
+    );
+    for (const expense of expenses) {
+      for (const date of scheduleOccurrences(expense, today > from ? today : from, monthEnd)) {
+        const amount = amountForOccurrence(expense, date, adjustments);
+        if (amount <= 0) continue;
+        const corrected = adjustments.has(occurrenceKey(expense.id, date));
+        events.push({
+          dateISO: toISODate(date),
+          type: "bill",
+          label: expense.name,
+          detail: `${formatCents(amount)} due${
+            corrected ? " (actual)" : expense.estimated ? " (estimated)" : ""
+          }`,
+          colorSlot: null,
+          severity: "ok",
+        });
+      }
+    }
   }
 
   events.sort((a, b) => a.dateISO.localeCompare(b.dateISO));

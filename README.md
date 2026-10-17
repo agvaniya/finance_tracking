@@ -19,6 +19,16 @@ Recharts. Containerized, with Terraform for a minimal-cost AWS deployment
 - **Checking account** — update the balance whenever it changes, with a reason
   ("Salary deposited", "Gift received", "Refund issued from insurance", …).
   Full history is kept for everything.
+- **Recurring income** — schedule any number of salaries or other repeating
+  deposits, each with its own cadence: monthly, twice a month, every two
+  weeks, or weekly. Day-of-month schedules clamp to short months; fortnightly
+  and weekly ones repeat from a pay date you supply. Any schedule can be
+  paused without deleting its history.
+- **Scheduled expenses** — rent, a car lease, utilities: the same cadences,
+  flowing the other way. A bill that varies can be marked as an estimate, and
+  when the real one arrives you correct that single due date from the
+  **Upcoming bills** list without touching the schedule. Later months keep the
+  estimate; entering 0 means it will not be charged that time.
 - **Predictions** — the net daily drift of your checking history projects the
   balance forward; upcoming auto pays are subtracted on the day they fire. You
   get: expected end-of-month checking balance, the lowest projected point,
@@ -192,10 +202,26 @@ works the same against any of them.
 
 - **Drift**: `(latest checking balance − balance ~90 days ago) ÷ days` gives a
   net per-day figure that already averages salary, rent, and daily spending.
-- **Projection**: walk forward 45 days, applying drift daily and subtracting
-  each card's auto pay on its scheduled day (statement balance, full balance,
-  minimum, or fixed — clamped to the card's outstanding total; auto pay days
-  past a month's end are clamped to the last day).
+- **Baseline spending**: whatever your schedules would have produced over the
+  same window is removed from the drift — income subtracted, expenses added
+  back. This matters: those deposits and bills already moved the recorded
+  balance, so projecting them forward on top of the raw drift would count the
+  same money twice. What remains is the residual everyday burn rate.
+- **Projection**: walk forward 45 days, applying the baseline daily, adding
+  each scheduled deposit on its pay date, subtracting each scheduled bill on
+  its due date (at the corrected amount where you have entered one), and
+  subtracting each card's auto pay on its scheduled day (statement balance,
+  full balance, minimum, or fixed — clamped to the card's outstanding total;
+  days past a month's end are clamped to the last day). The result is the
+  sawtooth you actually live: falling between paydays, jumping when you are
+  paid, dipping when rent and auto pay land.
+
+> **Assumption worth knowing.** Subtracting a schedule from history assumes the
+> obligation was already running during that window — true for rent, a lease,
+> or a salary you have had for a while. A schedule for something genuinely new
+> has no matching history, so it nudges the baseline until roughly 90 days of
+> history have accumulated. The "Spending per day" figure on the Checking page
+> is the number to sanity-check if a forecast looks off.
 - **Warnings**: an auto pay that leaves checking below $0 is flagged as an
   overdraft; below the $500 safety buffer as "tight". Both appear on the
   dashboard banner, the projection chart, and the calendar.

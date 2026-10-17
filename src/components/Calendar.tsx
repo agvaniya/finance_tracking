@@ -1,12 +1,17 @@
 import Link from "next/link";
 import { format } from "date-fns";
 import type { CalendarEvent } from "@/lib/events";
-import { CHECKING_COLOR, STATUS, seriesColor } from "@/lib/colors";
+import { CHART_CHROME, CHECKING_COLOR, STATUS, seriesColor } from "@/lib/colors";
+
+/** Bills are marked in ink rather than a hue — the shape carries the meaning. */
+const CHART_INK = CHART_CHROME.ink2;
 import { cx } from "./ui";
 
 const WEEKDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
 function eventColor(e: CalendarEvent): string {
+  if (e.type === "payday") return STATUS.goodText;
+  if (e.type === "bill") return CHART_INK;
   if (e.type === "autopay" && e.severity === "overdraft") return STATUS.critical;
   if (e.type === "autopay" && e.severity === "tight") return STATUS.warning;
   return e.colorSlot == null ? CHECKING_COLOR : seriesColor(e.colorSlot);
@@ -14,6 +19,22 @@ function eventColor(e: CalendarEvent): string {
 
 function Marker({ event }: { event: CalendarEvent }) {
   const color = eventColor(event);
+  if (event.type === "payday") {
+    // An upward chevron: money coming in, distinct from the auto-pay diamond.
+    return (
+      <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden className="shrink-0">
+        <path d="M4 0.5 L7.5 7 L0.5 7 Z" fill={color} />
+      </svg>
+    );
+  }
+  if (event.type === "bill") {
+    // The same triangle inverted: money going out.
+    return (
+      <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden className="shrink-0">
+        <path d="M4 7.5 L0.5 1 L7.5 1 Z" fill={color} />
+      </svg>
+    );
+  }
   if (event.type === "autopay") {
     return <span className="size-2 rotate-45" style={{ backgroundColor: color }} />;
   }
@@ -126,6 +147,22 @@ export function MonthCalendar({
         <span className="flex items-center gap-1.5">
           <span className="size-2 rotate-45 bg-ink-2" /> Auto pay ahead
         </span>
+        {events.some((e) => e.type === "payday") && (
+          <span className="flex items-center gap-1.5">
+            <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden>
+              <path d="M4 0.5 L7.5 7 L0.5 7 Z" fill={STATUS.goodText} />
+            </svg>
+            Payday
+          </span>
+        )}
+        {events.some((e) => e.type === "bill") && (
+          <span className="flex items-center gap-1.5">
+            <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden>
+              <path d="M4 7.5 L0.5 1 L7.5 1 Z" fill={CHART_INK} />
+            </svg>
+            Bill due
+          </span>
+        )}
       </div>
 
       {events.length > 0 && (

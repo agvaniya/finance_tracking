@@ -20,6 +20,7 @@ export const CHECKING_COLOR = "#104281";
 
 export const STATUS = {
   good: "#0ca30c",
+  /** Darker green used where a mark sits next to text on the light surface. */
   goodText: "#006300",
   warning: "#fab219",
   serious: "#ec835a",
