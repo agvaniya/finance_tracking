@@ -9,26 +9,48 @@ import {
   amountForOccurrence,
   autoPayAmount,
   autoPayDateInMonth,
+  hasAutoPay,
   occurrenceKey,
+  plannedPaymentThisMonth,
   scheduleOccurrences,
 } from "./domain";
 import type { CardWithState } from "./queries";
 
 /**
- * History-based forecast of the checking account.
+ * Cash-flow forecast of the checking account.
  *
- * Method: the net daily drift of the checking balance is estimated from the
- * recorded history (last balance minus the balance ~90 days ago, divided by
- * the span). That drift already averages in salary deposits, rent, and
- * everyday spending — but NOT upcoming credit-card auto pays, which are
- * discrete events we know about from each card's configuration. The forecast
- * walks forward day by day applying the drift and subtracting each auto pay
- * on the day it fires.
+ * The projection starts from the latest recorded balance and replays the
+ * money we know is going to move:
+ *
+ *   - scheduled income on its pay dates;
+ *   - scheduled bills on their due dates, at corrected amounts where known;
+ *   - this month's card payments: what is still due after the payments
+ *     already recorded this month (never below zero), on the auto pay day or
+ *     the day the card is usually paid by hand;
+ *   - later card payments: each card's next statement is estimated from its
+ *     typical monthly charges (new spending observed on the card), and the
+ *     card's auto pay rule — or its usual manual payment — is applied to it.
+ *
+ * Only after all of that is removed does history come in: whatever change in
+ * the recorded balance is NOT explained by those events becomes a small
+ * "other spending" rate per day. Past salaries, rent and card payments all
+ * moved the recorded balance, so they must be taken back out of the observed
+ * drift before projecting; otherwise every card payment would be counted
+ * once in the drift and again on the day it fires, which is exactly the
+ * runaway-negative forecast this model replaces.
  */
 
 export const SAFETY_BUFFER = 50_000; // cents — keep $500 in checking
+export const HORIZON_DAYS = 45;
+/** How far back history is read, for both checking drift and card behaviour. */
+export const HISTORY_DAYS = 90;
+/** Below this much history the unexplained residual is too noisy to project. */
+export const MIN_WINDOW_DAYS = 14;
 
-export interface ForecastAutoPay {
+const DAY = 86_400_000;
+const DAYS_PER_MONTH = 365.25 / 12;
+
+export interface ForecastCardPayment {
   cardId: string;
   cardName: string;
   colorSlot: number;
@@ -36,6 +58,10 @@ export interface ForecastAutoPay {
   amount: number;
   balanceAfter: number; // projected checking balance after the withdrawal
   severity: "ok" | "tight" | "overdraft";
+  /** Withdrawn by the issuer on the configured day, or paid by hand. */
+  kind: "autopay" | "manual";
+  /** True for later months, where the statement is estimated from typical charges. */
+  estimated: boolean;
 }
 
 export interface ForecastPoint {
@@ -63,27 +89,41 @@ export interface ForecastExpense {
   skipped: boolean;
 }
 
+export interface ForecastCardProfile {
+  cardId: string;
+  /** New spending per month observed on the card; null without enough history. */
+  typicalMonthlyCharges: number | null;
+  /** Average recorded payments per month; null when none are recorded. */
+  typicalMonthlyPayment: number | null;
+  /** Day of the month the card is usually paid, from recorded payments. */
+  typicalPaymentDay: number | null;
+}
+
 export interface Forecast {
   currentChecking: number | null; // null = no checking data yet
-  dailyDrift: number; // net cents per day observed in history (income included)
-  baselineDailyDrift: number; // net of scheduled income and bills — the everyday burn rate
-  hasSchedules: boolean; // true when the projection uses the baseline rather than the raw drift
+  dailyDrift: number; // raw change in the recorded balance per day
+  /**
+   * Change per day left over once scheduled income, bills and card payments
+   * in the history window are accounted for. The projection walks with this.
+   */
+  otherSpendingPerDay: number;
   driftWindowDays: number; // how much history informed the drift
+  /** True when the residual is backed by enough history to be projected. */
+  usesHistory: boolean;
   points: ForecastPoint[]; // daily projection from today
-  autoPays: ForecastAutoPay[]; // upcoming auto pays within the horizon
+  cardPayments: ForecastCardPayment[]; // upcoming card payments within the horizon
+  cardProfiles: ForecastCardProfile[];
   incomes: ForecastIncome[]; // upcoming scheduled deposits within the horizon
   expenses: ForecastExpense[]; // upcoming scheduled bills within the horizon
   endOfMonthBalance: number | null;
-  autoPayTotalThisMonth: number; // upcoming (not yet fired) this calendar month
+  /** Remaining statement balances across cards, net of recorded payments. */
+  dueThisMonth: number;
+  cardPaymentTotalThisMonth: number; // card payments still to leave checking this month
   incomeTotalThisMonth: number; // scheduled deposits still to come this month
   expenseTotalThisMonth: number; // scheduled bills still to come this month
-  payoffCapacity: number | null; // extra that could be paid this month beyond auto pays
+  payoffCapacity: number | null; // extra that could be paid this month beyond planned payments
   lowestPoint: ForecastPoint | null;
 }
-
-export const HORIZON_DAYS = 45;
-
-const DAY = 86_400_000;
 
 export function toISODate(d: Date): string {
   const y = d.getFullYear();
@@ -92,9 +132,43 @@ export function toISODate(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
-interface CheckingPoint {
+export interface CheckingPoint {
   balance: number;
   recordedAt: Date;
+}
+
+export interface CardPaymentPoint {
+  cardId: string;
+  amount: number;
+  paidAt: Date;
+}
+
+export interface CardUpdatePoint {
+  cardId: string;
+  totalBalance: number;
+  statementBalance: number;
+  kind: string;
+  recordedAt: Date;
+}
+
+export interface ForecastInput {
+  checkingHistory: CheckingPoint[];
+  cards: CardWithState[];
+  incomes?: RecurringIncome[];
+  expenses?: RecurringExpense[];
+  adjustments?: ExpenseAdjustment[];
+  /** Recorded card payments, ideally covering HISTORY_DAYS. */
+  cardPayments?: CardPaymentPoint[];
+  /** Card balance updates, ideally covering HISTORY_DAYS. */
+  cardUpdates?: CardUpdatePoint[];
+}
+
+function startOfDay(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+function daysInMonth(year: number, monthIndex: number): number {
+  return new Date(year, monthIndex + 1, 0).getDate();
 }
 
 export function estimateDailyDrift(
@@ -102,7 +176,7 @@ export function estimateDailyDrift(
   now = new Date()
 ): { drift: number; windowDays: number; from: Date | null; to: Date | null } {
   if (history.length < 2) return { drift: 0, windowDays: 0, from: null, to: null };
-  const cutoff = now.getTime() - 90 * DAY;
+  const cutoff = now.getTime() - HISTORY_DAYS * DAY;
   const window = history.filter((h) => h.recordedAt.getTime() >= cutoff);
   const pts = window.length >= 2 ? window : history.slice(-2);
   const first = pts[0];
@@ -119,63 +193,190 @@ export function estimateDailyDrift(
   };
 }
 
-/** Upcoming auto-pay events for a card within [from, to], given its current state. */
-function upcomingAutoPays(
-  card: CreditCard,
-  state: { totalBalance: number; statementBalance: number },
-  from: Date,
-  to: Date
-): { date: Date; amount: number }[] {
-  if (card.autoPayDay == null || card.autoPayType === "NONE") return [];
-  const events: { date: Date; amount: number }[] = [];
-  const months = [
-    { y: from.getFullYear(), m: from.getMonth() },
-    { y: from.getMonth() === 11 ? from.getFullYear() + 1 : from.getFullYear(), m: (from.getMonth() + 1) % 12 },
-    { y: from.getMonth() >= 10 ? from.getFullYear() + 1 : from.getFullYear(), m: (from.getMonth() + 2) % 12 },
-  ];
-  let remainingTotal = state.totalBalance;
-  let remainingStatement = state.statementBalance;
-  for (const { y, m } of months) {
-    const date = autoPayDateInMonth(card.autoPayDay, y, m);
-    if (date < from || date > to) continue;
-    // After the next statement closes (1st of a future month), the amount due
-    // rolls over: approximate the next statement balance with today's total.
-    const isFutureStatement = date.getFullYear() !== from.getFullYear() || date.getMonth() !== from.getMonth();
-    const amount = autoPayAmount(card, {
-      totalBalance: remainingTotal,
-      statementBalance: isFutureStatement ? remainingTotal : remainingStatement,
-    });
-    if (amount > 0) {
-      events.push({ date, amount });
-      remainingTotal = Math.max(0, remainingTotal - amount);
-      remainingStatement = Math.max(0, remainingStatement - amount);
+/**
+ * What a card's history says about how it is used: how much new spending
+ * lands on it per month, how much is paid per month, and on what day.
+ *
+ * New charges over a window are `(latest total − earliest total) + payments
+ * in between`: the balance would have grown by the charges alone, and every
+ * payment hid some of that growth. When no payments are recorded this
+ * collapses to the balance change, which can read as zero for a card that is
+ * paid off monthly — so the average of recent statement balances is used as
+ * the fallback.
+ */
+export function profileCard(
+  cardId: string,
+  updates: CardUpdatePoint[],
+  payments: CardPaymentPoint[],
+  now = new Date()
+): ForecastCardProfile {
+  const cutoff = now.getTime() - HISTORY_DAYS * DAY;
+  const ups = updates
+    .filter((u) => u.cardId === cardId)
+    .sort((a, b) => a.recordedAt.getTime() - b.recordedAt.getTime());
+  const pays = payments
+    .filter((p) => p.cardId === cardId && p.paidAt.getTime() >= cutoff)
+    .sort((a, b) => a.paidAt.getTime() - b.paidAt.getTime());
+
+  // Spending observed between the first and last update in the window.
+  let chargesPerMonth: number | null = null;
+  const inWindow = ups.filter((u) => u.recordedAt.getTime() >= cutoff);
+  if (inWindow.length >= 2) {
+    const first = inWindow[0];
+    const last = inWindow[inWindow.length - 1];
+    const span = (last.recordedAt.getTime() - first.recordedAt.getTime()) / DAY;
+    if (span >= MIN_WINDOW_DAYS) {
+      const paidBetween = pays
+        .filter((p) => p.paidAt > first.recordedAt && p.paidAt <= last.recordedAt)
+        .reduce((s, p) => s + p.amount, 0);
+      const charges = last.totalBalance - first.totalBalance + paidBetween;
+      chargesPerMonth = Math.max(0, Math.round((charges / span) * DAYS_PER_MONTH));
     }
+  }
+
+  // Fallback: the statement balance is last month's spending. Take the
+  // highest figure entered in each of the last three months (later entries
+  // in a month may already be net of payments) and average them.
+  const statementByMonth = new Map<string, number>();
+  for (const u of ups) {
+    if (u.kind !== "SNAPSHOT") continue;
+    const key = `${u.recordedAt.getFullYear()}-${u.recordedAt.getMonth()}`;
+    statementByMonth.set(key, Math.max(statementByMonth.get(key) ?? 0, u.statementBalance));
+  }
+  const recentStatements = [...statementByMonth.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .slice(-3)
+    .map(([, v]) => v);
+  const statementAverage =
+    recentStatements.length > 0
+      ? Math.round(recentStatements.reduce((s, v) => s + v, 0) / recentStatements.length)
+      : null;
+
+  const typicalMonthlyCharges =
+    chargesPerMonth != null && chargesPerMonth > 0 ? chargesPerMonth : statementAverage ?? chargesPerMonth;
+
+  // Payment habits over the window (or since the card's first record).
+  let typicalMonthlyPayment: number | null = null;
+  let typicalPaymentDay: number | null = null;
+  if (pays.length > 0) {
+    const windowStart = Math.max(cutoff, ups[0]?.recordedAt.getTime() ?? cutoff);
+    const span = (now.getTime() - windowStart) / DAY;
+    if (span >= MIN_WINDOW_DAYS) {
+      const total = pays.reduce((s, p) => s + p.amount, 0);
+      typicalMonthlyPayment = Math.round((total / span) * DAYS_PER_MONTH);
+    }
+    const days = pays.map((p) => p.paidAt.getDate()).sort((a, b) => a - b);
+    typicalPaymentDay = days[Math.floor(days.length / 2)];
+  }
+
+  return { cardId, typicalMonthlyCharges, typicalMonthlyPayment, typicalPaymentDay };
+}
+
+interface CardEvent {
+  card: CreditCard;
+  date: Date;
+  amount: number;
+  kind: "autopay" | "manual";
+  estimated: boolean;
+}
+
+/**
+ * The payments one card will take out of checking inside the horizon.
+ *
+ * This month uses what is actually known: the remaining amount due after the
+ * payments already recorded. Later months carry the card forward — charges
+ * still to come this cycle become part of the next statement, after which
+ * each month adds a typical month of charges — and apply the card's payment
+ * rule to that estimated state.
+ */
+function projectCardPayments(
+  card: CreditCard,
+  state: { totalBalance: number; statementBalance: number; recordedAt: Date },
+  paidThisMonth: number,
+  profile: ForecastCardProfile,
+  today: Date,
+  scheduledFrom: Date,
+  horizonEnd: Date
+): CardEvent[] {
+  const events: CardEvent[] = [];
+  const auto = hasAutoPay(card);
+  const kind = auto ? "autopay" : "manual";
+  const y = today.getFullYear();
+  const m = today.getMonth();
+
+  const paymentDate = (year: number, monthIndex: number): Date => {
+    const dim = daysInMonth(year, monthIndex);
+    if (auto) return autoPayDateInMonth(card.autoPayDay!, year, monthIndex);
+    return new Date(year, monthIndex, Math.min(profile.typicalPaymentDay ?? dim, dim));
+  };
+
+  // --- This month: the remaining amount due, on the day it is paid. ---
+  let total = state.totalBalance;
+  const dueNow = plannedPaymentThisMonth(card, state, paidThisMonth);
+  let dateNow: Date | null = paymentDate(y, m);
+  if (dateNow < scheduledFrom) {
+    // An auto pay whose day has passed already fired; a manual payment that
+    // is overdue is assumed to be made now.
+    dateNow = auto ? null : scheduledFrom;
+  }
+  if (dateNow && dueNow > 0 && dateNow <= horizonEnd) {
+    events.push({ card, date: dateNow, amount: dueNow, kind, estimated: false });
+    total -= dueNow;
+  }
+
+  // --- Later months: estimated statements. ---
+  // Whatever sat on the card above the statement when it was last recorded
+  // is this cycle's spending up to that day; the rest of the month adds a
+  // proportional share of a typical month, and that sum becomes next
+  // month's statement. A card last recorded in an earlier month tells us
+  // nothing about this cycle, so a whole typical month is assumed.
+  const recordedThisMonth =
+    state.recordedAt.getFullYear() === y && state.recordedAt.getMonth() === m;
+  const accrued = recordedThisMonth ? Math.max(0, state.totalBalance - state.statementBalance) : 0;
+  const elapsed = recordedThisMonth ? state.recordedAt.getDate() / daysInMonth(y, m) : 0;
+  const typical = profile.typicalMonthlyCharges ?? Math.round(accrued / Math.max(elapsed, 0.25));
+  const stillToCome = Math.round(typical * (1 - elapsed));
+  let statement = accrued + stillToCome;
+  total += stillToCome;
+
+  for (let k = 1; k <= 2; k++) {
+    const date = new Date(y, m + k, 1);
+    const year = date.getFullYear();
+    const monthIndex = date.getMonth();
+    const when = paymentDate(year, monthIndex);
+    if (when > horizonEnd) break;
+    const ruleAmount = auto
+      ? autoPayAmount(card, { totalBalance: total, statementBalance: statement })
+      : profile.typicalMonthlyPayment ?? statement;
+    const amount = Math.max(0, Math.min(ruleAmount, total));
+    if (amount > 0 && when >= scheduledFrom) {
+      events.push({ card, date: when, amount, kind, estimated: true });
+    }
+    total -= amount;
+    total += typical;
+    statement = typical;
   }
   return events;
 }
 
-export interface ScheduledOutgoings {
-  expenses?: RecurringExpense[];
-  adjustments?: ExpenseAdjustment[];
-}
+export function buildForecast(input: ForecastInput, now = new Date()): Forecast {
+  const checkingHistory = input.checkingHistory;
+  const incomes = input.incomes ?? [];
+  const allExpenses = input.expenses ?? [];
+  const cardPayments = input.cardPayments ?? [];
+  const cardUpdates = input.cardUpdates ?? [];
 
-export function buildForecast(
-  checkingHistory: CheckingPoint[],
-  cards: CardWithState[],
-  incomes: RecurringIncome[] = [],
-  outgoings: ScheduledOutgoings = {},
-  now = new Date()
-): Forecast {
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const horizonEnd = new Date(today.getTime() + HORIZON_DAYS * DAY);
+  const today = startOfDay(now);
+  const horizonEnd = new Date(today.getFullYear(), today.getMonth(), today.getDate() + HORIZON_DAYS);
   const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+  const endOfMonthISO = toISODate(endOfMonth);
 
   const latest = checkingHistory.at(-1) ?? null;
   const { drift, windowDays, from, to } = estimateDailyDrift(checkingHistory, now);
-  const allExpenses = outgoings.expenses ?? [];
   const activeIncomes = incomes.filter((i) => i.active);
   const activeExpenses = allExpenses.filter((e) => e.active);
-  const adjustments = adjustmentIndex(outgoings.adjustments ?? []);
+  const adjustments = adjustmentIndex(input.adjustments ?? []);
+  const activeCards = input.cards.filter(({ card, current }) => current && !card.archivedAt);
 
   // A schedule moved the recorded balance from its start date (if any) until
   // it was paused (if ever), so paused schedules still count up to then.
@@ -189,23 +390,16 @@ export function buildForecast(
     return scheduleOccurrences({ ...schedule, active: true }, windowFrom, until);
   };
 
-  // The observed drift already contains every salary and every rent cheque
-  // that moved the recorded balance during the history window. Projecting
-  // those schedules forward on top of the raw drift would count the same
-  // money twice, so the modelled amounts for the same window are removed
-  // first — income subtracted, expenses added back — leaving the residual
-  // everyday spending. Projecting forward is then that baseline plus the
-  // deposits and bills we know are coming, which is what turns a straight
-  // line into the sawtooth you actually live.
-  let historicalIncomePerDay = 0;
-  let historicalExpensePerDay = 0;
-  if (from && to && windowDays >= 3) {
+  // The residual: observed drift minus everything the model already replays
+  // for that window. Each term here is projected forward discretely, so each
+  // must be taken out of the history it also shaped.
+  let otherSpendingPerDay = 0;
+  const usesHistory = Boolean(from && to && windowDays >= MIN_WINDOW_DAYS);
+  if (from && to && usesHistory) {
     const windowIncome = incomes.reduce(
       (sum, income) => sum + historicalOccurrences(income, from, to).length * income.amount,
       0
     );
-    historicalIncomePerDay = Math.round(windowIncome / windowDays);
-
     const windowExpense = allExpenses.reduce(
       (sum, expense) =>
         sum +
@@ -215,23 +409,26 @@ export function buildForecast(
         ),
       0
     );
-    historicalExpensePerDay = Math.round(windowExpense / windowDays);
+    // A payment recorded in the same transaction as the window's opening
+    // balance is already inside that balance, hence the open lower bound.
+    const windowCardPayments = cardPayments
+      .filter((p) => p.paidAt > from && p.paidAt <= to)
+      .reduce((sum, p) => sum + p.amount, 0);
+    const observed = drift * windowDays;
+    otherSpendingPerDay = Math.round(
+      (observed - windowIncome + windowExpense + windowCardPayments) / windowDays
+    );
   }
-  const baselineDrift = drift - historicalIncomePerDay + historicalExpensePerDay;
-  const hasSchedules = activeIncomes.length > 0 || activeExpenses.length > 0;
 
   // Deposits and bills dated on or before the latest recorded balance are
   // taken to be in it already; anything later, today included, is still to
   // come. The lists, totals and balance walk all share this one cut-off.
-  const latestDay = latest
-    ? new Date(latest.recordedAt.getFullYear(), latest.recordedAt.getMonth(), latest.recordedAt.getDate())
-    : null;
+  const latestDay = latest ? startOfDay(latest.recordedAt) : null;
   const scheduledFrom =
     latestDay && latestDay >= today
       ? new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1)
       : today;
 
-  // Scheduled deposits ahead of us.
   const incomeEvents: ForecastIncome[] = activeIncomes
     .flatMap((income) =>
       scheduleOccurrences(income, scheduledFrom, horizonEnd).map((date) => ({
@@ -263,46 +460,59 @@ export function buildForecast(
     )
     .sort((a, b) => a.dateISO.localeCompare(b.dateISO));
 
-  // Collect auto-pay events across cards, keyed by day.
-  const rawEvents: { card: CreditCard; date: Date; amount: number }[] = [];
-  for (const { card, current } of cards) {
-    if (!current || card.archivedAt) continue;
-    for (const e of upcomingAutoPays(card, current, today, horizonEnd)) {
-      rawEvents.push({ card, date: e.date, amount: e.amount });
-    }
+  // Card payments across cards, this month from the known state and later
+  // months from each card's profile.
+  const cardProfiles: ForecastCardProfile[] = [];
+  const rawEvents: CardEvent[] = [];
+  let dueThisMonth = 0;
+  for (const { card, current, paidThisMonth } of activeCards) {
+    if (!current) continue;
+    const profile = profileCard(card.id, cardUpdates, cardPayments, now);
+    cardProfiles.push(profile);
+    dueThisMonth += current.statementBalance;
+    rawEvents.push(
+      ...projectCardPayments(card, current, paidThisMonth ?? 0, profile, today, scheduledFrom, horizonEnd)
+    );
   }
   rawEvents.sort((a, b) => a.date.getTime() - b.date.getTime());
 
   const incomeTotalThisMonth = incomeEvents
-    .filter((e) => e.dateISO <= toISODate(endOfMonth))
+    .filter((e) => e.dateISO <= endOfMonthISO)
     .reduce((s, e) => s + e.amount, 0);
   const expenseTotalThisMonth = expenseEvents
-    .filter((e) => e.dateISO <= toISODate(endOfMonth))
+    .filter((e) => e.dateISO <= endOfMonthISO)
     .reduce((s, e) => s + e.amount, 0);
+  const cardPaymentTotalThisMonth = rawEvents
+    .filter((e) => e.date <= endOfMonth)
+    .reduce((s, e) => s + e.amount, 0);
+
+  const toForecastPayment = (e: CardEvent, balanceAfter: number): ForecastCardPayment => ({
+    cardId: e.card.id,
+    cardName: e.card.name,
+    colorSlot: e.card.colorSlot,
+    dateISO: toISODate(e.date),
+    amount: e.amount,
+    balanceAfter,
+    severity: balanceAfter < 0 ? "overdraft" : balanceAfter < SAFETY_BUFFER ? "tight" : "ok",
+    kind: e.kind,
+    estimated: e.estimated,
+  });
 
   if (!latest) {
     return {
       currentChecking: null,
       dailyDrift: drift,
-      baselineDailyDrift: baselineDrift,
-      hasSchedules,
+      otherSpendingPerDay,
       driftWindowDays: windowDays,
+      usesHistory,
       points: [],
-      autoPays: rawEvents.map(({ card, date, amount }) => ({
-        cardId: card.id,
-        cardName: card.name,
-        colorSlot: card.colorSlot,
-        dateISO: toISODate(date),
-        amount,
-        balanceAfter: 0,
-        severity: "ok" as const,
-      })),
+      cardPayments: rawEvents.map((e) => ({ ...toForecastPayment(e, 0), severity: "ok" as const })),
+      cardProfiles,
       incomes: incomeEvents,
       expenses: expenseEvents,
       endOfMonthBalance: null,
-      autoPayTotalThisMonth: rawEvents
-        .filter((e) => e.date <= endOfMonth)
-        .reduce((s, e) => s + e.amount, 0),
+      dueThisMonth,
+      cardPaymentTotalThisMonth,
       incomeTotalThisMonth,
       expenseTotalThisMonth,
       payoffCapacity: null,
@@ -312,64 +522,60 @@ export function buildForecast(
 
   // Walk forward one day at a time.
   const points: ForecastPoint[] = [];
-  const autoPays: ForecastAutoPay[] = [];
+  const cardPaymentEvents: ForecastCardPayment[] = [];
   let balance = latest.balance;
   let lowest: ForecastPoint = { dateISO: toISODate(today), balance };
   let endOfMonthBalance: number | null = null;
 
   for (let i = 0; i <= HORIZON_DAYS; i++) {
-    const day = new Date(today.getTime() + i * DAY);
-    if (i > 0) balance += baselineDrift;
-    // Deposits land before the day's auto pays, matching how a payday that
-    // shares a date with a withdrawal actually plays out. Both lists already
-    // start after the latest recorded balance, so day 0 is included.
+    const day = new Date(today.getFullYear(), today.getMonth(), today.getDate() + i);
+    const dayISO = toISODate(day);
+    if (i > 0) balance += otherSpendingPerDay;
+    // Deposits land before the day's withdrawals, matching how a payday that
+    // shares a date with a payment actually plays out. Every list already
+    // starts after the latest recorded balance, so day 0 is included.
     for (const e of incomeEvents) {
-      if (e.dateISO === toISODate(day)) balance += e.amount;
+      if (e.dateISO === dayISO) balance += e.amount;
     }
     for (const e of expenseEvents) {
-      if (e.dateISO === toISODate(day)) balance -= e.amount;
+      if (e.dateISO === dayISO) balance -= e.amount;
     }
     for (const e of rawEvents) {
-      if (toISODate(e.date) !== toISODate(day)) continue;
+      if (toISODate(e.date) !== dayISO) continue;
       balance -= e.amount;
-      autoPays.push({
-        cardId: e.card.id,
-        cardName: e.card.name,
-        colorSlot: e.card.colorSlot,
-        dateISO: toISODate(day),
-        amount: e.amount,
-        balanceAfter: balance,
-        severity: balance < 0 ? "overdraft" : balance < SAFETY_BUFFER ? "tight" : "ok",
-      });
+      cardPaymentEvents.push(toForecastPayment(e, balance));
     }
-    const point = { dateISO: toISODate(day), balance };
+    const point = { dateISO: dayISO, balance };
     points.push(point);
     if (balance < lowest.balance) lowest = point;
-    if (toISODate(day) === toISODate(endOfMonth)) endOfMonthBalance = balance;
+    if (dayISO === endOfMonthISO) endOfMonthBalance = balance;
   }
   if (endOfMonthBalance === null) endOfMonthBalance = points.at(-1)?.balance ?? latest.balance;
 
-  // What could still be paid off this month beyond scheduled auto pays,
+  // What could still be paid off this month beyond the planned payments,
   // keeping the safety buffer intact at the month's lowest projected point.
   const lowestThisMonth = points
-    .filter((p) => p.dateISO <= toISODate(endOfMonth))
+    .filter((p) => p.dateISO <= endOfMonthISO)
     .reduce((min, p) => (p.balance < min ? p.balance : min), Infinity);
-  const payoffCapacity = Math.max(0, (lowestThisMonth === Infinity ? latest.balance : lowestThisMonth) - SAFETY_BUFFER);
+  const payoffCapacity = Math.max(
+    0,
+    (lowestThisMonth === Infinity ? latest.balance : lowestThisMonth) - SAFETY_BUFFER
+  );
 
   return {
     currentChecking: latest.balance,
     dailyDrift: drift,
-    baselineDailyDrift: baselineDrift,
-    hasSchedules,
+    otherSpendingPerDay,
     driftWindowDays: windowDays,
+    usesHistory,
     points,
-    autoPays,
+    cardPayments: cardPaymentEvents,
+    cardProfiles,
     incomes: incomeEvents,
     expenses: expenseEvents,
     endOfMonthBalance,
-    autoPayTotalThisMonth: autoPays
-      .filter((e) => e.dateISO <= toISODate(endOfMonth))
-      .reduce((s, e) => s + e.amount, 0),
+    dueThisMonth,
+    cardPaymentTotalThisMonth,
     incomeTotalThisMonth,
     expenseTotalThisMonth,
     payoffCapacity,

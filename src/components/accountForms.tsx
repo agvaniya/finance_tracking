@@ -301,7 +301,15 @@ function DeleteAccountDialog({ username, onClose }: { username: string; onClose:
   );
 }
 
-export function UserMenu({ username, signOutAction }: { username: string; signOutAction: () => Promise<void> }) {
+export function UserMenu({
+  username,
+  version,
+  signOutAction,
+}: {
+  username: string;
+  version: string;
+  signOutAction: () => Promise<void>;
+}) {
   const [open, setOpen] = useState(false);
   const [dialog, setDialog] = useState<"password" | "delete" | null>(null);
   const ref = useRef<HTMLDivElement>(null);
@@ -364,6 +372,7 @@ export function UserMenu({ username, signOutAction }: { username: string; signOu
               Sign out
             </button>
           </form>
+          <p className="border-t border-hairline px-3 py-1.5 text-[11px] text-muted">Ledgerline v{version}</p>
         </div>
       )}
 

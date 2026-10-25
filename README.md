@@ -36,9 +36,10 @@ Recharts. Containerized, with Terraform for a minimal-cost AWS deployment
   when the real one arrives you correct that single due date from the
   **Upcoming bills** list without touching the schedule. Later months keep the
   estimate; entering 0 means it will not be charged that time.
-- **Predictions** — the net daily drift of your checking history projects the
-  balance forward; upcoming auto pays are subtracted on the day they fire. You
-  get: expected end-of-month checking balance, the lowest projected point,
+- **Predictions** — the checking balance is projected forward from scheduled
+  income and bills, this month's remaining card payments, estimated later
+  statements, and the residual spending your history does not otherwise
+  explain. You get: expected end-of-month checking balance, the lowest projected point,
   payoff headroom (what you could still pay this month while keeping a $500
   buffer), and warnings when an auto pay would overdraw the account.
 - **Dashboard** — balance trend lines (90 days), a donut of debt distribution
@@ -208,36 +209,62 @@ works the same against any of them.
 
 ## How predictions work
 
-- **Drift**: `(latest checking balance − balance ~90 days ago) ÷ days` gives a
-  net per-day figure that already averages salary, rent, and daily spending.
-- **Baseline spending**: whatever your schedules would have produced over the
-  same window is removed from the drift — income subtracted, expenses added
-  back. This matters: those deposits and bills already moved the recorded
-  balance, so projecting them forward on top of the raw drift would count the
-  same money twice. What remains is the residual everyday burn rate.
-- **Projection**: walk forward 45 days, applying the baseline daily, adding
-  each scheduled deposit on its pay date, subtracting each scheduled bill on
-  its due date (at the corrected amount where you have entered one), and
-  subtracting each card's auto pay on its scheduled day (statement balance,
-  full balance, minimum, or fixed — clamped to the card's outstanding total;
-  days past a month's end are clamped to the last day). The result is the
-  sawtooth you actually live: falling between paydays, jumping when you are
-  paid, dipping when rent and auto pay land.
+The forecast starts from the latest recorded checking balance and replays the
+money we know is going to move, then adds a small history-derived residual.
 
-> **Assumption worth knowing.** Subtracting a schedule from history assumes the
-> obligation was already running during that window — true for rent, a lease,
-> or a salary you have had for a while. A schedule for something genuinely new
-> has no matching history, so it nudges the baseline until roughly 90 days of
-> history have accumulated. The "Spending per day" figure on the Checking page
-> is the number to sanity-check if a forecast looks off.
-- **Warnings**: an auto pay that leaves checking below $0 is flagged as an
+- **Scheduled income** lands on each pay date; **scheduled bills** leave on
+  each due date (at the corrected amount where you have entered one).
+- **This month's card payments** are what is still due after the payments
+  already recorded this month. Recording a payment reduces the amount due,
+  never below $0. A card with auto pay withdraws on its configured day
+  (statement balance, full balance, minimum, or fixed); a card paid by hand
+  owes its remaining statement balance on the day it is usually paid, or at
+  month end.
+- **Later card payments** are estimated. Each card's typical monthly charges
+  are measured from its history (`balance change + payments recorded` over up
+  to 90 days, falling back to the average of recent statement balances). The
+  spending already on the card above its statement, plus a proportional share
+  of a typical month, becomes next month's statement; after that each month
+  adds a typical month of charges. The card's auto pay rule is applied to that
+  estimated statement; a card paid by hand uses its typical monthly payment.
+  These rows are marked "est" on the dashboard.
+- **Other spending**: whatever change in the recorded checking balance is
+  *not* explained by the scheduled income, bills and card payments in the
+  same window becomes a per-day residual (cash withdrawals, transfers,
+  anything that bypasses the cards). It needs at least 14 days of history;
+  with less, the forecast is the explicit events only.
+
+> **Why the residual subtracts card payments.** Past salaries, rent and card
+> payments all moved the recorded balance, so they are inside the observed
+> drift. Projecting them forward on top of the raw drift would count the same
+> money twice — once in the drift and again on the day it fires — which is
+> what made earlier forecasts dive. Record card payments as payments (not
+> just as a lower card balance) so they can be taken back out of the history.
+> The "Other spending per day" figure on the Checking page is the number to
+> sanity-check if a forecast looks off; a schedule entered for something
+> genuinely new, with no matching history, skews it until history accumulates.
+
+- **Warnings**: a card payment that leaves checking below $0 is flagged as an
   overdraft; below the $500 safety buffer as "tight". Both appear on the
   dashboard banner, the projection chart, and the calendar.
 - **Payoff headroom**: the month's lowest projected balance minus the buffer —
-  what you could safely pay toward cards beyond what's already scheduled.
+  what you could safely pay toward cards beyond what's already planned.
 
-Predictions only know what you record: the more regularly balances are
-updated, the better the forecast.
+Predictions only know what you record: the more regularly balances and
+payments are logged, the better the forecast.
+
+## Versioning
+
+The version lives in `package.json` (`"version"`) and is shown in the account
+menu and in the bottom-right corner of the sign-in screen. It follows
+`major.feature.patch`:
+
+- **patch** (last part): bug fixes and small builds.
+- **feature** (middle): a major feature.
+- **major** (first): only bumped by explicit decision.
+
+Bump it in `package.json` (and `package-lock.json`) as part of the change
+that ships it.
 
 ## Project layout
 

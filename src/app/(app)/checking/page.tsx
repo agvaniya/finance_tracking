@@ -21,8 +21,10 @@ import {
   type ScheduleFrequency,
 } from "@/lib/domain";
 import { formatCents } from "@/lib/money";
-import { buildForecast } from "@/lib/predictions";
+import { HISTORY_DAYS, MIN_WINDOW_DAYS, buildForecast } from "@/lib/predictions";
 import {
+  getCardHistories,
+  getCardPayments,
   getCardsWithState,
   getCheckingAccount,
   getCheckingHistory,
@@ -35,24 +37,28 @@ export const dynamic = "force-dynamic";
 
 export default async function CheckingPage() {
   const userId = await requireUserId();
-  const [checking, history, cards, incomes, expenses, adjustments] = await Promise.all([
-    getCheckingAccount(userId),
-    getCheckingHistory(userId),
-    getCardsWithState(userId),
-    getIncomes(userId),
-    getExpenses(userId),
-    getExpenseAdjustments(userId),
-  ]);
+  const [checking, history, cards, incomes, expenses, adjustments, cardHistories, cardPayments] =
+    await Promise.all([
+      getCheckingAccount(userId),
+      getCheckingHistory(userId),
+      getCardsWithState(userId),
+      getIncomes(userId),
+      getExpenses(userId),
+      getExpenseAdjustments(userId),
+      getCardHistories(userId, HISTORY_DAYS),
+      getCardPayments(userId, HISTORY_DAYS),
+    ]);
 
-  const forecast = buildForecast(
-    history.map((u) => ({ balance: u.balance, recordedAt: u.recordedAt })),
+  const forecast = buildForecast({
+    checkingHistory: history,
     cards,
     incomes,
-    { expenses, adjustments }
-  );
+    expenses,
+    adjustments,
+    cardPayments,
+    cardUpdates: [...cardHistories.values()].flat(),
+  });
   const now = new Date();
-  // The rate the projection actually walks forward with.
-  const projectedDrift = forecast.hasSchedules ? forecast.baselineDailyDrift : forecast.dailyDrift;
   const monthlyIncome = incomes
     .filter((i) => i.active)
     .reduce((sum, i) => sum + monthlyEquivalent(i), 0);
@@ -105,19 +111,19 @@ export default async function CheckingPage() {
             tone: change30 != null ? (change30 >= 0 ? "good" : "bad") : undefined,
           },
           {
-            label: forecast.hasSchedules ? "Spending per day" : "Net per day",
-            value: forecast.driftWindowDays > 0 ? formatCents(projectedDrift, { signed: true }) : "—",
-            sub: forecast.driftWindowDays > 0
-              ? forecast.hasSchedules
-                ? `Excluding scheduled income and bills, from ${forecast.driftWindowDays} days`
-                : `From ${forecast.driftWindowDays} days of history`
-              : undefined,
-            tone: forecast.driftWindowDays > 0 ? (projectedDrift >= 0 ? "good" : "bad") : undefined,
+            label: "Other spending per day",
+            value: forecast.usesHistory ? formatCents(forecast.otherSpendingPerDay, { signed: true }) : "—",
+            sub: forecast.usesHistory
+              ? `Not explained by income, bills or card payments, over ${forecast.driftWindowDays} days`
+              : forecast.driftWindowDays > 0
+                ? `Needs ${MIN_WINDOW_DAYS} days of history; have ${forecast.driftWindowDays}`
+                : "Record checking balances over time to measure it",
+            tone: forecast.usesHistory ? (forecast.otherSpendingPerDay >= 0 ? "good" : "bad") : undefined,
           },
           {
             label: "Projected month end",
             value: forecast.endOfMonthBalance != null ? formatCents(forecast.endOfMonthBalance) : "—",
-            sub: "After scheduled auto pays",
+            sub: "After scheduled income, bills and card payments",
             tone: forecast.endOfMonthBalance != null && forecast.endOfMonthBalance < 0 ? "bad" : undefined,
           },
         ].map((tile) => (

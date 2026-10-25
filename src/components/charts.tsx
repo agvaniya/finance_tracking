@@ -20,7 +20,7 @@ import {
 import { CHART_CHROME, STATUS } from "@/lib/colors";
 import { formatCents, formatCentsCompact } from "@/lib/money";
 import type {
-  ForecastAutoPay,
+  ForecastCardPayment,
   ForecastExpense,
   ForecastIncome,
   ForecastPoint,
@@ -221,13 +221,13 @@ export function DistributionDonut({ slices, centerLabel }: { slices: DonutSlice[
 
 export function ProjectionChart({
   points,
-  autoPays,
+  cardPayments,
   incomes = [],
   expenses = [],
   buffer,
 }: {
   points: ForecastPoint[];
-  autoPays: ForecastAutoPay[];
+  cardPayments: ForecastCardPayment[];
   incomes?: ForecastIncome[];
   expenses?: ForecastExpense[];
   buffer: number;
@@ -237,13 +237,13 @@ export function ProjectionChart({
     if (e.skipped) continue;
     expenseByDate.set(e.dateISO, [...(expenseByDate.get(e.dateISO) ?? []), e]);
   }
-  const byDate = new Map(autoPays.map((a) => [a.dateISO, a] as const));
+  const byDate = new Map(cardPayments.map((a) => [a.dateISO, a] as const));
   const incomeByDate = new Map<string, ForecastIncome[]>();
   for (const i of incomes) {
     incomeByDate.set(i.dateISO, [...(incomeByDate.get(i.dateISO) ?? []), i]);
   }
   const min = Math.min(0, ...points.map((p) => p.balance));
-  const eventColor = (s: ForecastAutoPay["severity"]) =>
+  const eventColor = (s: ForecastCardPayment["severity"]) =>
     s === "overdraft" ? STATUS.critical : s === "tight" ? STATUS.warning : "#104281";
 
   return (
@@ -290,7 +290,9 @@ export function ProjectionChart({
                   ),
                   ...(event
                     ? [
-                        `${event.cardName} auto pay ${formatCents(event.amount)}${
+                        `${event.cardName} ${event.kind === "autopay" ? "auto pay" : "payment"} ${formatCents(event.amount)}${
+                          event.estimated ? " (est)" : ""
+                        }${
                           event.severity === "overdraft"
                             ? " — overdraws the account"
                             : event.severity === "tight"
@@ -336,7 +338,7 @@ export function ProjectionChart({
                 />
               );
             })}
-            {autoPays.map((a) => {
+            {cardPayments.map((a) => {
               const point = points.find((p) => p.dateISO === a.dateISO);
               if (!point) return null;
               return (

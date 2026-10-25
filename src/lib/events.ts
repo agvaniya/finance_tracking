@@ -1,11 +1,5 @@
 import { prisma } from "./db";
-import {
-  adjustmentIndex,
-  amountForOccurrence,
-  autoPayDateInMonth,
-  occurrenceKey,
-  scheduleOccurrences,
-} from "./domain";
+import { adjustmentIndex, amountForOccurrence, occurrenceKey, scheduleOccurrences } from "./domain";
 import { formatCents } from "./money";
 import { toISODate, type Forecast } from "./predictions";
 
@@ -29,7 +23,7 @@ export interface CalendarEvent {
 
 /**
  * Points of interest for one calendar month: recorded balance updates,
- * payments, payoff moments, plus upcoming auto-pay dates (with severity
+ * payments, payoff moments, plus upcoming card payments (with severity
  * taken from the forecast when it projects a tight or negative balance).
  */
 export async function getMonthEvents(
@@ -43,7 +37,7 @@ export async function getMonthEvents(
   const to = new Date(year, monthIndex + 1, 1);
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-  const [cardUpdates, payments, checkingUpdates, cards] = await Promise.all([
+  const [cardUpdates, payments, checkingUpdates] = await Promise.all([
     prisma.cardBalanceUpdate.findMany({
       where: { recordedAt: { gte: from, lt: to }, kind: "SNAPSHOT", card: { userId } },
       include: { card: true },
@@ -56,7 +50,6 @@ export async function getMonthEvents(
       where: { recordedAt: { gte: from, lt: to }, account: { userId } },
       include: { account: true },
     }),
-    prisma.creditCard.findMany({ where: { archivedAt: null, userId } }),
   ]);
 
   const events: CalendarEvent[] = [];
@@ -110,28 +103,26 @@ export async function getMonthEvents(
     });
   }
 
-  // Upcoming auto-pay dates in this month (past ones already appear as payments).
-  for (const card of cards) {
-    if (card.autoPayDay == null || card.autoPayType === "NONE") continue;
-    const date = autoPayDateInMonth(card.autoPayDay, year, monthIndex);
-    if (date < today) continue;
-    const dateISO = toISODate(date);
-    const projected = forecast.autoPays.find((a) => a.cardId === card.id && a.dateISO === dateISO);
+  // Upcoming card payments in this month (past ones already appear as
+  // payments): this month's remaining amount due, or an estimated statement
+  // for a later month, on the auto pay day or the usual manual payment day.
+  const monthISO = `${year}-${`${monthIndex + 1}`.padStart(2, "0")}`;
+  for (const p of forecast.cardPayments) {
+    if (!p.dateISO.startsWith(monthISO) || p.dateISO < toISODate(today)) continue;
+    const byHand = p.kind === "manual";
     events.push({
-      dateISO,
+      dateISO: p.dateISO,
       type: "autopay",
-      label: `${card.name} auto pay`,
-      detail: projected
-        ? `${formatCents(projected.amount)} scheduled${
-            projected.severity === "overdraft"
-              ? " — would overdraw checking"
-              : projected.severity === "tight"
-                ? " — leaves checking below the buffer"
-                : ""
-          }`
-        : "Scheduled",
-      colorSlot: card.colorSlot,
-      severity: projected?.severity ?? "ok",
+      label: `${p.cardName} ${byHand ? "payment" : "auto pay"}`,
+      detail: `${formatCents(p.amount)} ${p.estimated ? "estimated" : byHand ? "due" : "scheduled"}${
+        p.severity === "overdraft"
+          ? " — would overdraw checking"
+          : p.severity === "tight"
+            ? " — leaves checking below the buffer"
+            : ""
+      }`,
+      colorSlot: p.colorSlot,
+      severity: p.severity,
     });
   }
 

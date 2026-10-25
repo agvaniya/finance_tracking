@@ -8,8 +8,10 @@ import { getTrendData } from "@/lib/chartData";
 import { CHECKING_COLOR, STATUS, seriesColor } from "@/lib/colors";
 import { getMonthEvents } from "@/lib/events";
 import { formatCents } from "@/lib/money";
-import { SAFETY_BUFFER, buildForecast, toISODate } from "@/lib/predictions";
+import { HISTORY_DAYS, SAFETY_BUFFER, buildForecast, toISODate } from "@/lib/predictions";
 import {
+  getCardHistories,
+  getCardPayments,
   getCardsWithState,
   getCheckingAccount,
   getCheckingHistory,
@@ -56,24 +58,39 @@ export default async function DashboardPage({
   const { month } = await searchParams;
   const userId = await requireUserId();
 
-  const [cards, checking, checkingHistory, trend, activity, incomes, expenses, adjustments] =
-    await Promise.all([
-      getCardsWithState(userId),
-      getCheckingAccount(userId),
-      getCheckingHistory(userId),
-      getTrendData(userId, 90),
-      getRecentActivity(userId, 10),
-      getIncomes(userId),
-      getExpenses(userId),
-      getExpenseAdjustments(userId),
-    ]);
+  const [
+    cards,
+    checking,
+    checkingHistory,
+    trend,
+    activity,
+    incomes,
+    expenses,
+    adjustments,
+    cardHistories,
+    cardPayments,
+  ] = await Promise.all([
+    getCardsWithState(userId),
+    getCheckingAccount(userId),
+    getCheckingHistory(userId),
+    getTrendData(userId, 90),
+    getRecentActivity(userId, 10),
+    getIncomes(userId),
+    getExpenses(userId),
+    getExpenseAdjustments(userId),
+    getCardHistories(userId, HISTORY_DAYS),
+    getCardPayments(userId, HISTORY_DAYS),
+  ]);
 
-  const forecast = buildForecast(
-    checkingHistory.map((u) => ({ balance: u.balance, recordedAt: u.recordedAt })),
+  const forecast = buildForecast({
+    checkingHistory,
     cards,
     incomes,
-    { expenses, adjustments }
-  );
+    expenses,
+    adjustments,
+    cardPayments,
+    cardUpdates: [...cardHistories.values()].flat(),
+  });
 
   const now = new Date();
   // Bills corrected to $0 are only listed on the checking page, where they can be reset.
@@ -86,8 +103,7 @@ export default async function DashboardPage({
   const events = await getMonthEvents(userId, calYear, calMonth, forecast);
 
   const totalDebt = cards.reduce((s, c) => s + (c.current?.totalBalance ?? 0), 0);
-  const dueThisMonth = cards.reduce((s, c) => s + (c.current?.statementBalance ?? 0), 0);
-  const alerts = forecast.autoPays.filter((a) => a.severity !== "ok");
+  const alerts = forecast.cardPayments.filter((a) => a.severity !== "ok");
   const endOfMonthLabel = format(new Date(now.getFullYear(), now.getMonth() + 1, 0), "MMM d");
 
   const donutSlices = cards
@@ -130,9 +146,9 @@ export default async function DashboardPage({
                 {a.severity === "overdraft" ? "⚠" : "◆"}
               </span>
               <span>
-                <strong>{a.cardName}</strong> auto pay of{" "}
-                <span className="money font-medium">{formatCents(a.amount)}</span> on{" "}
-                {format(new Date(`${a.dateISO}T00:00:00`), "MMM d")}{" "}
+                <strong>{a.cardName}</strong> {a.kind === "autopay" ? "auto pay" : "payment"} of{" "}
+                <span className="money font-medium">{formatCents(a.amount)}</span>
+                {a.estimated ? " (estimated)" : ""} on {format(new Date(`${a.dateISO}T00:00:00`), "MMM d")}{" "}
                 {a.severity === "overdraft" ? (
                   <>
                     would <strong className="text-critical">overdraw checking</strong> to{" "}
@@ -174,11 +190,11 @@ export default async function DashboardPage({
         />
         <StatTile
           label="Due this month"
-          cents={cards.length ? dueThisMonth : null}
+          cents={cards.length ? forecast.dueThisMonth : null}
           sub={
-            forecast.autoPayTotalThisMonth > 0
-              ? `${formatCents(forecast.autoPayTotalThisMonth)} on auto pay`
-              : "No auto pays remaining"
+            forecast.cardPaymentTotalThisMonth > 0
+              ? `${formatCents(forecast.cardPaymentTotalThisMonth)} still to be paid`
+              : "No card payments remaining"
           }
         />
         {forecast.incomeTotalThisMonth > 0 && (
@@ -208,18 +224,18 @@ export default async function DashboardPage({
           <Panel
             title="The month ahead"
             aside={
-              forecast.driftWindowDays === 0
-                ? "Record checking balances to enable projections"
-                : forecast.hasSchedules
-                  ? `${formatCents(forecast.baselineDailyDrift)}/day spending, plus scheduled income and bills`
-                  : `Projected from ${forecast.driftWindowDays} days of history (${formatCents(forecast.dailyDrift)}/day net)`
+              forecast.currentChecking == null
+                ? "Record a checking balance to enable projections"
+                : forecast.usesHistory
+                  ? `Scheduled income, bills and card payments, plus ${formatCents(forecast.otherSpendingPerDay, { signed: true })}/day unexplained by them`
+                  : "Scheduled income, bills and card payments"
             }
           >
             {forecast.points.length > 0 ? (
               <div className="grid gap-6 lg:grid-cols-[1fr_230px]">
                 <ProjectionChart
                   points={forecast.points}
-                  autoPays={forecast.autoPays}
+                  cardPayments={forecast.cardPayments}
                   incomes={forecast.incomes}
                   expenses={forecast.expenses}
                   buffer={SAFETY_BUFFER}
@@ -288,12 +304,12 @@ export default async function DashboardPage({
                     </div>
                   )}
                   <div>
-                    <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">Upcoming auto pays</p>
-                    {forecast.autoPays.length === 0 ? (
-                      <p className="text-sm text-ink-2">None scheduled in the next 45 days.</p>
+                    <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">Upcoming card payments</p>
+                    {forecast.cardPayments.length === 0 ? (
+                      <p className="text-sm text-ink-2">None expected in the next 45 days.</p>
                     ) : (
                       <ul className="space-y-1.5">
-                        {forecast.autoPays.map((a) => (
+                        {forecast.cardPayments.map((a) => (
                           <li key={`${a.cardId}-${a.dateISO}`} className="flex items-center justify-between gap-2 text-sm">
                             <span className="flex min-w-0 items-center gap-1.5 text-ink-2">
                               <Dot color={seriesColor(a.colorSlot)} />
@@ -301,6 +317,10 @@ export default async function DashboardPage({
                               <span className="shrink-0 text-xs text-muted">
                                 {format(new Date(`${a.dateISO}T00:00:00`), "MMM d")}
                               </span>
+                              {a.estimated && <span className="shrink-0 text-[10px] uppercase text-muted">est</span>}
+                              {a.kind === "manual" && (
+                                <span className="shrink-0 text-[10px] uppercase text-muted">by hand</span>
+                              )}
                             </span>
                             <Money cents={a.amount} className={cx("shrink-0 text-ink", a.severity === "overdraft" && "text-critical")} />
                           </li>

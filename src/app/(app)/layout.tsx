@@ -6,6 +6,7 @@ import { getSessionUser } from "@/lib/auth";
 import { NavLinks } from "@/components/NavLinks";
 import { UserMenu } from "@/components/accountForms";
 import { Wordmark } from "@/components/Wordmark";
+import { APP_VERSION } from "@/lib/version";
 
 export default async function AppLayout({ children }: { children: ReactNode }) {
   const user = await getSessionUser();
@@ -20,7 +21,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           </Link>
           <div className="flex items-center gap-2">
             <NavLinks />
-            <UserMenu username={user.username} signOutAction={signOut} />
+            <UserMenu username={user.username} version={APP_VERSION} signOutAction={signOut} />
           </div>
         </div>
       </header>

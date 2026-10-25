@@ -51,6 +51,49 @@ export function autoPayAmount(
   return Math.max(0, Math.min(amount, state.totalBalance));
 }
 
+/** True when the issuer withdraws a payment on a configured day each month. */
+export function hasAutoPay(card: Pick<CardLike, "autoPayDay" | "autoPayType">): boolean {
+  return card.autoPayDay != null && card.autoPayType !== "NONE";
+}
+
+/**
+ * What this month's card payment will still take out of checking.
+ *
+ * Payments recorded this month come off the amount due, never below zero.
+ * The statement and total in `state` are already net of recorded payments
+ * (each payment writes a derived balance update), so only the fixed-size
+ * auto pays need `paidThisMonth` subtracted explicitly. A card paid by hand
+ * owes its remaining statement balance.
+ */
+export function plannedPaymentThisMonth(
+  card: CardLike,
+  state: { totalBalance: number; statementBalance: number },
+  paidThisMonth: number
+): number {
+  let amount: number;
+  if (!hasAutoPay(card)) {
+    amount = state.statementBalance;
+  } else {
+    switch (card.autoPayType) {
+      case "STATEMENT":
+        amount = state.statementBalance;
+        break;
+      case "FULL":
+        amount = state.totalBalance;
+        break;
+      case "MINIMUM":
+        amount = card.minimumPayment - paidThisMonth;
+        break;
+      case "FIXED":
+        amount = (card.autoPayFixedAmount ?? 0) - paidThisMonth;
+        break;
+      default:
+        amount = 0;
+    }
+  }
+  return Math.max(0, Math.min(amount, state.totalBalance));
+}
+
 /**
  * The actual calendar date auto pay fires in a given month, clamping
  * day-of-month to the month's length (e.g. day 31 in February → Feb 28/29).

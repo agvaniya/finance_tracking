@@ -1,5 +1,5 @@
 import { prisma } from "./db";
-import type { CardBalanceUpdate, CheckingBalanceUpdate, CreditCard } from "@prisma/client";
+import type { CardBalanceUpdate, CardPayment, CheckingBalanceUpdate, CreditCard } from "@prisma/client";
 
 export interface CardState {
   totalBalance: number;
@@ -10,17 +10,29 @@ export interface CardState {
 export interface CardWithState {
   card: CreditCard;
   current: CardState | null;
+  /** Payments recorded in the current calendar month, in cents. */
+  paidThisMonth: number;
 }
 
 export async function getCardsWithState(
   userId: string,
-  includeArchived = false
+  includeArchived = false,
+  now = new Date()
 ): Promise<CardWithState[]> {
-  const cards = await prisma.creditCard.findMany({
-    where: { userId, ...(includeArchived ? {} : { archivedAt: null }) },
-    orderBy: { createdAt: "asc" },
-    include: { balanceUpdates: { orderBy: { recordedAt: "desc" }, take: 1 } },
-  });
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const [cards, paid] = await Promise.all([
+    prisma.creditCard.findMany({
+      where: { userId, ...(includeArchived ? {} : { archivedAt: null }) },
+      orderBy: { createdAt: "asc" },
+      include: { balanceUpdates: { orderBy: { recordedAt: "desc" }, take: 1 } },
+    }),
+    prisma.cardPayment.groupBy({
+      by: ["cardId"],
+      where: { card: { userId }, paidAt: { gte: monthStart } },
+      _sum: { amount: true },
+    }),
+  ]);
+  const paidByCard = new Map(paid.map((p) => [p.cardId, p._sum.amount ?? 0]));
   return cards.map(({ balanceUpdates, ...card }) => ({
     card: card as CreditCard,
     current: balanceUpdates[0]
@@ -30,7 +42,19 @@ export async function getCardsWithState(
           recordedAt: balanceUpdates[0].recordedAt,
         }
       : null,
+    paidThisMonth: paidByCard.get(card.id) ?? 0,
   }));
+}
+
+/** Recorded card payments across the user's active cards, oldest first. */
+export async function getCardPayments(userId: string, days?: number): Promise<CardPayment[]> {
+  return prisma.cardPayment.findMany({
+    where: {
+      card: { userId, archivedAt: null },
+      ...(days ? { paidAt: { gte: new Date(Date.now() - days * 86_400_000) } } : {}),
+    },
+    orderBy: { paidAt: "asc" },
+  });
 }
 
 /** Returns null when the card belongs to someone else, so callers 404. */

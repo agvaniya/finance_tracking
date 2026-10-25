@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { APP_VERSION } from "@/lib/version";
 import { Wordmark } from "./Wordmark";
 
 /** Shared frame for the signed-out pages: sign in, sign up, password reset. */
@@ -16,6 +17,9 @@ export function AuthShell({ children, subtitle }: { children: ReactNode; subtitl
           {children}
         </div>
       </div>
+      <p className="fixed bottom-3 right-4 text-[11px] text-muted" aria-label="App version">
+        v{APP_VERSION}
+      </p>
     </main>
   );
 }
