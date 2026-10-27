@@ -10,6 +10,7 @@ export type CalendarEventType =
   | "paid-off"
   | "autopay"
   | "payday"
+  | "one-time-income"
   | "bill";
 
 export interface CalendarEvent {
@@ -37,9 +38,9 @@ export async function getMonthEvents(
   const to = new Date(year, monthIndex + 1, 1);
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-  const [cardUpdates, payments, checkingUpdates] = await Promise.all([
+  const [cardUpdates, payments, checkingUpdates, oneTimeIncomes] = await Promise.all([
     prisma.cardBalanceUpdate.findMany({
-      where: { recordedAt: { gte: from, lt: to }, kind: "SNAPSHOT", card: { userId } },
+      where: { recordedAt: { gte: from, lt: to }, kind: { in: ["SNAPSHOT", "CHARGE"] }, card: { userId } },
       include: { card: true },
     }),
     prisma.cardPayment.findMany({
@@ -47,19 +48,25 @@ export async function getMonthEvents(
       include: { card: true },
     }),
     prisma.checkingBalanceUpdate.findMany({
-      where: { recordedAt: { gte: from, lt: to }, account: { userId } },
+      where: { recordedAt: { gte: from, lt: to }, account: { userId }, oneTimeIncome: null },
       include: { account: true },
+    }),
+    prisma.oneTimeIncome.findMany({
+      where: { receivedAt: { gte: from, lt: to }, account: { userId } },
     }),
   ]);
 
   const events: CalendarEvent[] = [];
 
   for (const u of cardUpdates) {
+    const charge = u.kind === "CHARGE";
     events.push({
       dateISO: toISODate(u.recordedAt),
       type: "card-update",
-      label: `${u.card.name} balance updated`,
-      detail: `${formatCents(u.totalBalance)}${u.reason ? ` — ${u.reason}` : ""}`,
+      label: charge ? `Expense on ${u.card.name}` : `${u.card.name} balance updated`,
+      detail: charge
+        ? `${u.reason ?? "Expense"} — balance now ${formatCents(u.totalBalance)}`
+        : `${formatCents(u.totalBalance)}${u.reason ? ` — ${u.reason}` : ""}`,
       colorSlot: u.card.colorSlot,
       severity: "ok",
     });
@@ -98,6 +105,17 @@ export async function getMonthEvents(
       type: "checking-update",
       label: `${u.account.name} updated`,
       detail: `${formatCents(u.balance)}${u.reason ? ` — ${u.reason}` : ""}`,
+      colorSlot: null,
+      severity: "ok",
+    });
+  }
+
+  for (const i of oneTimeIncomes) {
+    events.push({
+      dateISO: toISODate(i.receivedAt),
+      type: "one-time-income",
+      label: i.name,
+      detail: `${formatCents(i.amount)} received${i.note ? ` — ${i.note}` : ""}`,
       colorSlot: null,
       severity: "ok",
     });

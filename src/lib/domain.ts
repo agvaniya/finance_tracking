@@ -104,6 +104,24 @@ export function autoPayDateInMonth(autoPayDay: number, year: number, monthIndex:
 }
 
 // ---------------------------------------------------------------------------
+// One-time income — money that arrived once and will not repeat
+// ---------------------------------------------------------------------------
+
+export const ONE_TIME_INCOME_CATEGORIES = ["TRANSFER", "GIFT", "REIMBURSEMENT", "OTHER"] as const;
+export type OneTimeIncomeCategory = (typeof ONE_TIME_INCOME_CATEGORIES)[number];
+
+export const ONE_TIME_INCOME_LABELS: Record<OneTimeIncomeCategory, string> = {
+  TRANSFER: "Transfer from savings",
+  GIFT: "Gift",
+  REIMBURSEMENT: "Reimbursement",
+  OTHER: "Other one-time income",
+};
+
+export function isOneTimeIncomeCategory(value: string): value is OneTimeIncomeCategory {
+  return (ONE_TIME_INCOME_CATEGORIES as readonly string[]).includes(value);
+}
+
+// ---------------------------------------------------------------------------
 // Repeating schedules — shared by recurring income and recurring expenses
 // ---------------------------------------------------------------------------
 

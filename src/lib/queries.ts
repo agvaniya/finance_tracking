@@ -1,5 +1,11 @@
 import { prisma } from "./db";
-import type { CardBalanceUpdate, CardPayment, CheckingBalanceUpdate, CreditCard } from "@prisma/client";
+import type {
+  CardBalanceUpdate,
+  CardPayment,
+  CheckingBalanceUpdate,
+  CreditCard,
+  OneTimeIncome,
+} from "@prisma/client";
 
 export interface CardState {
   totalBalance: number;
@@ -103,6 +109,66 @@ export async function getExpenseAdjustments(userId: string, sinceDays = 120) {
   });
 }
 
+export interface LastExpense {
+  id: string;
+  amount: number;
+  note: string | null;
+  /** "checking" or the card id, matching the record-expense dialog's options. */
+  target: string;
+  label: string;
+  recordedAt: Date;
+  /** True while nothing newer has been recorded on the same card or account. */
+  editable: boolean;
+}
+
+/** The most recently recorded expense, and whether it can still be corrected. */
+export async function getLastExpense(userId: string): Promise<LastExpense | null> {
+  const expense = await prisma.oneOffExpense.findFirst({
+    where: { userId },
+    orderBy: { recordedAt: "desc" },
+    include: { card: { select: { name: true } }, account: { select: { name: true } } },
+  });
+  if (!expense) return null;
+
+  let editable = false;
+  if (expense.cardId && expense.cardUpdateId) {
+    const latest = await prisma.cardBalanceUpdate.findFirst({
+      where: { cardId: expense.cardId },
+      orderBy: { recordedAt: "desc" },
+      select: { id: true },
+    });
+    editable = latest?.id === expense.cardUpdateId;
+  } else if (expense.accountId && expense.checkingUpdateId) {
+    const latest = await prisma.checkingBalanceUpdate.findFirst({
+      where: { accountId: expense.accountId },
+      orderBy: { recordedAt: "desc" },
+      select: { id: true },
+    });
+    editable = latest?.id === expense.checkingUpdateId;
+  }
+
+  return {
+    id: expense.id,
+    amount: expense.amount,
+    note: expense.note,
+    target: expense.cardId ?? "checking",
+    label: expense.card?.name ?? expense.account?.name ?? "Checking account",
+    recordedAt: expense.recordedAt,
+    editable,
+  };
+}
+
+/** One-time income entries, newest first, optionally limited to recent days. */
+export async function getOneTimeIncomes(userId: string, days?: number): Promise<OneTimeIncome[]> {
+  return prisma.oneTimeIncome.findMany({
+    where: {
+      account: { userId },
+      ...(days ? { receivedAt: { gte: new Date(Date.now() - days * 86_400_000) } } : {}),
+    },
+    orderBy: { receivedAt: "desc" },
+  });
+}
+
 export async function getCheckingHistory(
   userId: string,
   days?: number
@@ -139,7 +205,7 @@ export async function getCardHistories(
 export interface ActivityItem {
   id: string;
   when: Date;
-  kind: "card-update" | "card-payment" | "checking-update";
+  kind: "card-update" | "expense" | "card-payment" | "checking-update" | "one-time-income";
   label: string;
   detail: string;
   reason: string | null;
@@ -148,7 +214,7 @@ export interface ActivityItem {
 
 /** Merged recent activity across cards and checking, newest first. */
 export async function getRecentActivity(userId: string, limit = 12): Promise<ActivityItem[]> {
-  const [cardUpdates, payments, checkingUpdates] = await Promise.all([
+  const [cardUpdates, payments, checkingUpdates, oneTimeIncomes, expenses] = await Promise.all([
     prisma.cardBalanceUpdate.findMany({
       where: { kind: "SNAPSHOT", card: { userId } },
       orderBy: { recordedAt: "desc" },
@@ -162,10 +228,22 @@ export async function getRecentActivity(userId: string, limit = 12): Promise<Act
       include: { card: true },
     }),
     prisma.checkingBalanceUpdate.findMany({
-      where: { account: { userId } },
+      // Updates written by a one-time income or an expense are shown as those.
+      where: { account: { userId }, oneTimeIncome: null, oneOffExpense: null },
       orderBy: { recordedAt: "desc" },
       take: limit,
       include: { account: true },
+    }),
+    prisma.oneTimeIncome.findMany({
+      where: { account: { userId } },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+    }),
+    prisma.oneOffExpense.findMany({
+      where: { userId },
+      orderBy: { recordedAt: "desc" },
+      take: limit,
+      include: { card: { select: { name: true, colorSlot: true } }, account: { select: { name: true } } },
     }),
   ]);
 
@@ -178,6 +256,15 @@ export async function getRecentActivity(userId: string, limit = 12): Promise<Act
       detail: `balance:${u.totalBalance}`,
       reason: u.reason,
       colorSlot: u.card.colorSlot,
+    })),
+    ...expenses.map((e) => ({
+      id: `ex-${e.id}`,
+      when: e.recordedAt,
+      kind: "expense" as const,
+      label: e.card?.name ?? e.account?.name ?? "Checking account",
+      detail: `expense:${e.amount}`,
+      reason: e.note,
+      colorSlot: e.card?.colorSlot ?? null,
     })),
     ...payments.map((p) => ({
       id: `cp-${p.id}`,
@@ -195,6 +282,15 @@ export async function getRecentActivity(userId: string, limit = 12): Promise<Act
       label: u.account.name,
       detail: `balance:${u.balance}`,
       reason: u.reason,
+      colorSlot: null,
+    })),
+    ...oneTimeIncomes.map((i) => ({
+      id: `oi-${i.id}`,
+      when: i.createdAt,
+      kind: "one-time-income" as const,
+      label: i.name,
+      detail: `income:${i.amount}`,
+      reason: i.note,
       colorSlot: null,
     })),
   ];

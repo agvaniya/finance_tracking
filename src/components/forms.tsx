@@ -9,7 +9,7 @@ import {
   useTransition,
   type ReactNode,
 } from "react";
-import type { CreditCard, RecurringExpense, RecurringIncome } from "@prisma/client";
+import type { CreditCard, OneTimeIncome, RecurringExpense, RecurringIncome } from "@prisma/client";
 import { format } from "date-fns";
 import {
   adjustBill,
@@ -18,21 +18,28 @@ import {
   createExpense,
   createIncome,
   deleteExpense,
+  deleteExpenseRecord,
   deleteIncome,
   recordCardBalance,
+  recordExpense,
+  recordOneTimeIncome,
   recordPayment,
+  removeOneTimeIncome,
   renameChecking,
   setExpenseActive,
   setIncomeActive,
   updateCard,
   updateChecking,
   updateExpense,
+  updateExpenseRecord,
   updateIncome,
   type ActionState,
 } from "@/lib/actions";
 import {
   AUTO_PAY_LABELS,
   AUTO_PAY_TYPES,
+  ONE_TIME_INCOME_CATEGORIES,
+  ONE_TIME_INCOME_LABELS,
   SCHEDULE_FREQUENCIES,
   SCHEDULE_FREQUENCY_LABELS,
   usesDayOfMonth,
@@ -408,6 +415,189 @@ export function UpdateCheckingButton({
         </DialogShell>
       )}
     </>
+  );
+}
+
+// ---------- one-off expense ----------
+
+export interface ExpenseTarget {
+  id: string;
+  name: string;
+}
+
+function OneOffExpenseFields({
+  cards,
+  initial,
+}: {
+  cards: ExpenseTarget[];
+  initial?: { amount: number; target: string; note: string | null };
+}) {
+  return (
+    <>
+      <Field label="Amount">
+        <MoneyInput name="amount" required defaultCents={initial?.amount} />
+      </Field>
+      <Field
+        label="Paid from"
+        hint="A card expense is added to that card's balance; a checking expense is taken off the balance now."
+      >
+        <select name="target" defaultValue={initial?.target ?? cards[0]?.id ?? "checking"} className={inputClass}>
+          {cards.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+          <option value="checking">Checking account</option>
+        </select>
+      </Field>
+      <Field label="Comment">
+        <input name="note" defaultValue={initial?.note ?? undefined} placeholder="e.g. Groceries, Car repair" className={inputClass} />
+      </Field>
+    </>
+  );
+}
+
+export function RecordExpenseButton({
+  cards,
+  variant = "secondary",
+}: {
+  /** Active cards the expense can be put on, besides the checking account. */
+  cards: ExpenseTarget[];
+  variant?: keyof typeof buttonStyles;
+}) {
+  const d = useDialog();
+  return (
+    <>
+      <button type="button" onClick={d.show} className={buttonStyles[variant]}>
+        Record expense
+      </button>
+      {d.open && (
+        <DialogShell key={d.key} title="Record an expense" onClose={d.hide}>
+          <DialogForm action={recordExpense} submitLabel="Record expense" onDone={d.hide}>
+            <OneOffExpenseFields cards={cards} />
+          </DialogForm>
+        </DialogShell>
+      )}
+    </>
+  );
+}
+
+/**
+ * Edit / remove for the most recent expense, offered only while nothing has
+ * been recorded on the same card or account since (the server re-checks).
+ */
+export function LastExpenseActions({
+  expense,
+  cards,
+}: {
+  expense: { id: string; amount: number; target: string; note: string | null; label: string };
+  cards: ExpenseTarget[];
+}) {
+  const d = useDialog();
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <span className="flex items-center gap-0.5">
+      <button type="button" onClick={d.show} className={buttonStyles.ghost}>
+        Edit
+      </button>
+      <button
+        type="button"
+        disabled={pending}
+        className={cx(buttonStyles.ghost, "text-critical hover:bg-critical-wash")}
+        onClick={() => {
+          if (window.confirm(`Remove this expense? The ${expense.label} balance goes back to what it was before.`)) {
+            startTransition(async () => {
+              const result = await deleteExpenseRecord(expense.id);
+              setError(result.error ?? null);
+            });
+          }
+        }}
+      >
+        Remove
+      </button>
+      {error && (
+        <span role="alert" className="text-xs text-critical">
+          {error}
+        </span>
+      )}
+      {d.open && (
+        <DialogShell key={d.key} title="Edit the last expense" onClose={d.hide}>
+          <DialogForm action={updateExpenseRecord.bind(null, expense.id)} submitLabel="Save changes" onDone={d.hide}>
+            <OneOffExpenseFields cards={cards} initial={expense} />
+            <p className="rounded-lg bg-page/60 px-3 py-2 text-xs text-ink-2">
+              The original balance movement is taken back and redone with these values.
+            </p>
+          </DialogForm>
+        </DialogShell>
+      )}
+    </span>
+  );
+}
+
+// ---------- one-time income ----------
+
+export function AddOneTimeIncomeButton({ variant = "secondary" }: { variant?: keyof typeof buttonStyles }) {
+  const d = useDialog();
+  return (
+    <>
+      <button type="button" onClick={d.show} className={buttonStyles[variant]}>
+        Record income
+      </button>
+      {d.open && (
+        <DialogShell key={d.key} title="Record one-time income" onClose={d.hide}>
+          <DialogForm action={recordOneTimeIncome} submitLabel="Record income" onDone={d.hide}>
+            <Field label="Amount received">
+              <MoneyInput name="amount" required />
+            </Field>
+            <Field label="What kind of income">
+              <select name="category" defaultValue="TRANSFER" className={inputClass}>
+                {ONE_TIME_INCOME_CATEGORIES.map((c) => (
+                  <option key={c} value={c}>
+                    {ONE_TIME_INCOME_LABELS[c]}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Description" hint="Shown in the activity list and on the calendar.">
+              <input name="name" placeholder="e.g. Birthday gift, Travel reimbursement" className={inputClass} />
+            </Field>
+            <Field label="Date received">
+              <input type="date" name="receivedAt" defaultValue={format(new Date(), "yyyy-MM-dd")} className={inputClass} />
+            </Field>
+            <Field label="Note">
+              <input name="note" placeholder="Optional" className={inputClass} />
+            </Field>
+            <p className="rounded-lg bg-page/60 px-3 py-2 text-xs text-ink-2">
+              The checking balance goes up by this amount right away. The forecast treats it as a
+              one-off, not as income that will repeat.
+            </p>
+          </DialogForm>
+        </DialogShell>
+      )}
+    </>
+  );
+}
+
+export function OneTimeIncomeRowActions({ income }: { income: OneTimeIncome }) {
+  const [pending, startTransition] = useTransition();
+  return (
+    <button
+      type="button"
+      disabled={pending}
+      className={cx(buttonStyles.ghost, "text-critical hover:bg-critical-wash")}
+      onClick={() => {
+        if (
+          window.confirm(
+            `Remove ${income.name}? If it is the latest checking update, the balance goes back to what it was before.`
+          )
+        ) {
+          startTransition(() => removeOneTimeIncome(income.id));
+        }
+      }}
+    >
+      Remove
+    </button>
   );
 }
 

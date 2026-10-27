@@ -3,9 +3,12 @@ import { TrendChart } from "@/components/charts";
 import {
   AddExpenseButton,
   AddIncomeButton,
+  AddOneTimeIncomeButton,
   AdjustBillButton,
   ExpenseRowActions,
   IncomeRowActions,
+  OneTimeIncomeRowActions,
+  RecordExpenseButton,
   RenameCheckingButton,
   UpdateCheckingButton,
 } from "@/components/forms";
@@ -14,10 +17,12 @@ import { requireUserId } from "@/lib/auth";
 import { sampleDailySeries } from "@/lib/chartData";
 import { CHECKING_COLOR } from "@/lib/colors";
 import {
+  ONE_TIME_INCOME_LABELS,
   SCHEDULE_FREQUENCY_LABELS,
   monthlyEquivalent,
   nextOccurrenceDate,
   scheduleDateInputs,
+  type OneTimeIncomeCategory,
   type ScheduleFrequency,
 } from "@/lib/domain";
 import { formatCents } from "@/lib/money";
@@ -31,23 +36,34 @@ import {
   getExpenseAdjustments,
   getExpenses,
   getIncomes,
+  getOneTimeIncomes,
 } from "@/lib/queries";
 
 export const dynamic = "force-dynamic";
 
 export default async function CheckingPage() {
   const userId = await requireUserId();
-  const [checking, history, cards, incomes, expenses, adjustments, cardHistories, cardPayments] =
-    await Promise.all([
-      getCheckingAccount(userId),
-      getCheckingHistory(userId),
-      getCardsWithState(userId),
-      getIncomes(userId),
-      getExpenses(userId),
-      getExpenseAdjustments(userId),
-      getCardHistories(userId, HISTORY_DAYS),
-      getCardPayments(userId, HISTORY_DAYS),
-    ]);
+  const [
+    checking,
+    history,
+    cards,
+    incomes,
+    expenses,
+    adjustments,
+    cardHistories,
+    cardPayments,
+    oneTimeIncomes,
+  ] = await Promise.all([
+    getCheckingAccount(userId),
+    getCheckingHistory(userId),
+    getCardsWithState(userId),
+    getIncomes(userId),
+    getExpenses(userId),
+    getExpenseAdjustments(userId),
+    getCardHistories(userId, HISTORY_DAYS),
+    getCardPayments(userId, HISTORY_DAYS),
+    getOneTimeIncomes(userId),
+  ]);
 
   const forecast = buildForecast({
     checkingHistory: history,
@@ -57,8 +73,12 @@ export default async function CheckingPage() {
     adjustments,
     cardPayments,
     cardUpdates: [...cardHistories.values()].flat(),
+    oneTimeIncomes,
   });
   const now = new Date();
+  const oneTimeThisMonth = oneTimeIncomes
+    .filter((i) => i.receivedAt.getFullYear() === now.getFullYear() && i.receivedAt.getMonth() === now.getMonth())
+    .reduce((sum, i) => sum + i.amount, 0);
   const monthlyIncome = incomes
     .filter((i) => i.active)
     .reduce((sum, i) => sum + monthlyEquivalent(i), 0);
@@ -95,7 +115,11 @@ export default async function CheckingPage() {
               : "No balance recorded yet"}
           </p>
         </div>
-        <UpdateCheckingButton currentBalance={checking?.latest?.balance} />
+        <div className="flex gap-2">
+          <RecordExpenseButton cards={cards.map((c) => ({ id: c.card.id, name: c.card.name }))} />
+          <AddOneTimeIncomeButton />
+          <UpdateCheckingButton currentBalance={checking?.latest?.balance} />
+        </div>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -192,6 +216,50 @@ export default async function CheckingPage() {
           )}
           <div className="flex justify-end">
             <AddIncomeButton />
+          </div>
+        </div>
+      </Panel>
+
+      <Panel
+        title="One-time income"
+        aside={
+          oneTimeThisMonth > 0
+            ? `${formatCents(oneTimeThisMonth)} received this month`
+            : "Transfers, gifts, reimbursements — money that will not repeat"
+        }
+      >
+        <div className="space-y-3">
+          {oneTimeIncomes.length === 0 ? (
+            <EmptyState title="No one-time income recorded">
+              A transfer from savings, a gift, or a reimbursement raises the balance here
+              without being mistaken for everyday income in the forecast.
+            </EmptyState>
+          ) : (
+            <ul className="divide-y divide-hairline">
+              {oneTimeIncomes.slice(0, 20).map((income) => (
+                <li key={income.id} className="flex flex-wrap items-center justify-between gap-3 py-2.5 first:pt-0">
+                  <span className="min-w-0">
+                    <span className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-ink">{income.name}</span>
+                      <span className="rounded-full bg-page px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted">
+                        {ONE_TIME_INCOME_LABELS[income.category as OneTimeIncomeCategory]}
+                      </span>
+                    </span>
+                    <span className="block text-xs text-ink-2">
+                      {format(income.receivedAt, "MMM d, yyyy")}
+                      {income.note && <> · {income.note}</>}
+                    </span>
+                  </span>
+                  <span className="flex items-center gap-3">
+                    <Money cents={income.amount} signed className="text-sm font-medium text-good-text" />
+                    <OneTimeIncomeRowActions income={income} />
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="flex justify-end">
+            <AddOneTimeIncomeButton />
           </div>
         </div>
       </Panel>

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { format, formatDistanceToNow } from "date-fns";
-import { AddCardButton, RecordPaymentButton, UpdateBalanceButton } from "@/components/forms";
+import { AddCardButton, RecordExpenseButton, RecordPaymentButton, UpdateBalanceButton } from "@/components/forms";
 import { Dot, EmptyState, Money, cx } from "@/components/ui";
 import { seriesColor } from "@/lib/colors";
 import { AUTO_PAY_LABELS, autoPayDateInMonth, type AutoPayType } from "@/lib/domain";
@@ -41,7 +41,10 @@ export default async function CardsPage() {
             {cards.length} active card{cards.length === 1 ? "" : "s"}
           </p>
         </div>
-        <AddCardButton />
+        <div className="flex gap-2">
+          {cards.length > 0 && <RecordExpenseButton cards={cards.map((c) => ({ id: c.card.id, name: c.card.name }))} />}
+          <AddCardButton />
+        </div>
       </div>
 
       {cards.length === 0 ? (

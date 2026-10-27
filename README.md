@@ -36,6 +36,16 @@ Recharts. Containerized, with Terraform for a minimal-cost AWS deployment
   when the real one arrives you correct that single due date from the
   **Upcoming bills** list without touching the schedule. Later months keep the
   estimate; entering 0 means it will not be charged that time.
+- **Record expense** — log a purchase with its amount, a comment, and where
+  it was paid from: on a card (added to that card's balance, and counted as
+  card spending by the forecast) or from checking (taken off the balance).
+  The most recent expense can be edited or removed from the dashboard's
+  activity list while nothing newer has been recorded on that card or
+  account; the balance movement is taken back and redone.
+- **One-time income** — a transfer from savings, a gift, or a reimbursement
+  is recorded in one step: the checking balance goes up by the amount, and the
+  entry is kept so the forecast knows the jump will not repeat. Removing an
+  entry restores the balance when nothing has been recorded since.
 - **Predictions** — the checking balance is projected forward from scheduled
   income and bills, this month's remaining card payments, estimated later
   statements, and the residual spending your history does not otherwise
@@ -229,8 +239,8 @@ money we know is going to move, then adds a small history-derived residual.
   estimated statement; a card paid by hand uses its typical monthly payment.
   These rows are marked "est" on the dashboard.
 - **Other spending**: whatever change in the recorded checking balance is
-  *not* explained by the scheduled income, bills and card payments in the
-  same window becomes a per-day residual (cash withdrawals, transfers,
+  *not* explained by the scheduled income, one-time income, bills and card
+  payments in the same window becomes a per-day residual (cash withdrawals, transfers,
   anything that bypasses the cards). It needs at least 14 days of history;
   with less, the forecast is the explicit events only.
 

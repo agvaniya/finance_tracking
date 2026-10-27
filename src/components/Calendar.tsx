@@ -10,7 +10,7 @@ import { cx } from "./ui";
 const WEEKDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
 function eventColor(e: CalendarEvent): string {
-  if (e.type === "payday") return STATUS.goodText;
+  if (e.type === "payday" || e.type === "one-time-income") return STATUS.goodText;
   if (e.type === "bill") return CHART_INK;
   if (e.type === "autopay" && e.severity === "overdraft") return STATUS.critical;
   if (e.type === "autopay" && e.severity === "tight") return STATUS.warning;
@@ -19,7 +19,7 @@ function eventColor(e: CalendarEvent): string {
 
 function Marker({ event }: { event: CalendarEvent }) {
   const color = eventColor(event);
-  if (event.type === "payday") {
+  if (event.type === "payday" || event.type === "one-time-income") {
     // An upward chevron: money coming in, distinct from the auto-pay diamond.
     return (
       <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden className="shrink-0">

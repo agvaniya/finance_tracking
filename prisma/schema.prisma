@@ -26,6 +26,7 @@ model User {
   securityQuestions SecurityQuestion[]
   cards             CreditCard[]
   checkingAccounts  CheckingAccount[]
+  oneOffExpenses    OneOffExpense[]
 }
 
 /// Used only to re-establish access when a password is forgotten. Answers are
@@ -69,6 +70,7 @@ model CreditCard {
 
   balanceUpdates CardBalanceUpdate[]
   payments       CardPayment[]
+  oneOffExpenses OneOffExpense[]
 
   @@index([archivedAt])
   @@index([userId])
@@ -82,8 +84,11 @@ model CardBalanceUpdate {
   statementBalance Int // cents — last month's balance, due this month
   reason           String?
   // SNAPSHOT (user-entered) | PAYMENT (derived from a recorded payment)
+  // | CHARGE (derived from a recorded expense on the card)
   kind             String   @default("SNAPSHOT")
   recordedAt       DateTime @default(now())
+
+  oneOffExpense OneOffExpense?
 
   @@index([cardId, recordedAt])
 }
@@ -109,11 +114,67 @@ model CheckingAccount {
   name      String   @default("Checking account")
   createdAt DateTime @default(now())
 
-  updates  CheckingBalanceUpdate[]
-  incomes  RecurringIncome[]
-  expenses RecurringExpense[]
+  updates        CheckingBalanceUpdate[]
+  incomes        RecurringIncome[]
+  expenses       RecurringExpense[]
+  oneTimeIncomes OneTimeIncome[]
+  oneOffExpenses OneOffExpense[]
 
   @@index([userId])
+}
+
+/// A purchase recorded by hand, on a card or from checking, together with the
+/// balance update it wrote. While that update is still the latest one on its
+/// card or account the expense can be corrected or removed cleanly.
+model OneOffExpense {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  amount Int // cents
+  note   String?
+
+  // Exactly one of these is set: where the money came from.
+  cardId    String?
+  card      CreditCard?      @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  accountId String?
+  account   CheckingAccount? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  cardUpdateId     String?                @unique
+  cardUpdate       CardBalanceUpdate?     @relation(fields: [cardUpdateId], references: [id], onDelete: SetNull)
+  checkingUpdateId String?                @unique
+  checkingUpdate   CheckingBalanceUpdate? @relation(fields: [checkingUpdateId], references: [id], onDelete: SetNull)
+
+  recordedAt DateTime @default(now())
+
+  @@index([userId, recordedAt])
+}
+
+/// Money that arrived once and will not repeat: a transfer from savings, a
+/// gift, a reimbursement. Recording one raises the checking balance, and the
+/// forecast is told about it so the jump is not read as everyday income.
+model OneTimeIncome {
+  id        String          @id @default(cuid())
+  accountId String
+  account   CheckingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  name   String
+  amount Int // cents
+
+  // TRANSFER | GIFT | REIMBURSEMENT | OTHER — validated in src/lib/domain.ts
+  category String  @default("OTHER")
+  note     String?
+
+  /// The day the money arrived, at local midnight.
+  receivedAt DateTime
+  createdAt  DateTime @default(now())
+
+  /// The balance update written when this was recorded, so removing the
+  /// entry can take the balance back if nothing has been recorded since.
+  balanceUpdateId String?                @unique
+  balanceUpdate   CheckingBalanceUpdate? @relation(fields: [balanceUpdateId], references: [id], onDelete: SetNull)
+
+  @@index([accountId, receivedAt])
 }
 
 /// A salary or other income that lands on a repeating schedule. Several may
@@ -205,6 +266,9 @@ model CheckingBalanceUpdate {
   balance    Int // cents
   reason     String?
   recordedAt DateTime @default(now())
+
+  oneTimeIncome OneTimeIncome?
+  oneOffExpense OneOffExpense?
 
   @@index([accountId, recordedAt])
 }

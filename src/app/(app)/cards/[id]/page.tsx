@@ -139,6 +139,11 @@ export default async function CardDetailPage({ params }: { params: Promise<{ id:
                             payment
                           </span>
                         )}
+                        {u.kind === "CHARGE" && (
+                          <span className="mr-1.5 rounded-full bg-page px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted">
+                            expense
+                          </span>
+                        )}
                         {u.reason ?? "—"}
                       </td>
                     </tr>

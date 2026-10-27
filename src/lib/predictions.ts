@@ -22,7 +22,8 @@ import type { CardWithState } from "./queries";
  * The projection starts from the latest recorded balance and replays the
  * money we know is going to move:
  *
- *   - scheduled income on its pay dates;
+ *   - scheduled income on its pay dates (one-time income is already in the
+ *     recorded balance, so it is only taken out of the history residual);
  *   - scheduled bills on their due dates, at corrected amounts where known;
  *   - this month's card payments: what is still due after the payments
  *     already recorded this month (never below zero), on the auto pay day or
@@ -151,6 +152,12 @@ export interface CardUpdatePoint {
   recordedAt: Date;
 }
 
+export interface OneTimeIncomePoint {
+  amount: number;
+  /** When it was recorded, which is when the balance history jumped. */
+  createdAt: Date;
+}
+
 export interface ForecastInput {
   checkingHistory: CheckingPoint[];
   cards: CardWithState[];
@@ -161,6 +168,8 @@ export interface ForecastInput {
   cardPayments?: CardPaymentPoint[];
   /** Card balance updates, ideally covering HISTORY_DAYS. */
   cardUpdates?: CardUpdatePoint[];
+  /** One-time income recorded within the history window. */
+  oneTimeIncomes?: OneTimeIncomePoint[];
 }
 
 function startOfDay(d: Date): Date {
@@ -365,6 +374,7 @@ export function buildForecast(input: ForecastInput, now = new Date()): Forecast 
   const allExpenses = input.expenses ?? [];
   const cardPayments = input.cardPayments ?? [];
   const cardUpdates = input.cardUpdates ?? [];
+  const oneTimeIncomes = input.oneTimeIncomes ?? [];
 
   const today = startOfDay(now);
   const horizonEnd = new Date(today.getFullYear(), today.getMonth(), today.getDate() + HORIZON_DAYS);
@@ -414,9 +424,14 @@ export function buildForecast(input: ForecastInput, now = new Date()): Forecast 
     const windowCardPayments = cardPayments
       .filter((p) => p.paidAt > from && p.paidAt <= to)
       .reduce((sum, p) => sum + p.amount, 0);
+    // A gift or transfer raised the recorded balance exactly once; it will
+    // not happen again, so it must not leak into the everyday rate.
+    const windowOneTime = oneTimeIncomes
+      .filter((i) => i.createdAt > from && i.createdAt <= to)
+      .reduce((sum, i) => sum + i.amount, 0);
     const observed = drift * windowDays;
     otherSpendingPerDay = Math.round(
-      (observed - windowIncome + windowExpense + windowCardPayments) / windowDays
+      (observed - windowIncome - windowOneTime + windowExpense + windowCardPayments) / windowDays
     );
   }
 

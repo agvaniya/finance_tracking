@@ -1,5 +1,11 @@
 import { format, formatDistanceToNow } from "date-fns";
-import { AddCardButton, UpdateCheckingButton } from "@/components/forms";
+import {
+  AddCardButton,
+  AddOneTimeIncomeButton,
+  LastExpenseActions,
+  RecordExpenseButton,
+  UpdateCheckingButton,
+} from "@/components/forms";
 import { DistributionDonut, ProjectionChart, TrendChart } from "@/components/charts";
 import { MonthCalendar } from "@/components/Calendar";
 import { Dot, EmptyState, Money, Panel, cx } from "@/components/ui";
@@ -18,6 +24,8 @@ import {
   getExpenseAdjustments,
   getExpenses,
   getIncomes,
+  getLastExpense,
+  getOneTimeIncomes,
   getRecentActivity,
 } from "@/lib/queries";
 
@@ -69,6 +77,8 @@ export default async function DashboardPage({
     adjustments,
     cardHistories,
     cardPayments,
+    oneTimeIncomes,
+    lastExpense,
   ] = await Promise.all([
     getCardsWithState(userId),
     getCheckingAccount(userId),
@@ -80,7 +90,10 @@ export default async function DashboardPage({
     getExpenseAdjustments(userId),
     getCardHistories(userId, HISTORY_DAYS),
     getCardPayments(userId, HISTORY_DAYS),
+    getOneTimeIncomes(userId, HISTORY_DAYS),
+    getLastExpense(userId),
   ]);
+  const expenseTargets = cards.map((c) => ({ id: c.card.id, name: c.card.name }));
 
   const forecast = buildForecast({
     checkingHistory,
@@ -90,6 +103,7 @@ export default async function DashboardPage({
     adjustments,
     cardPayments,
     cardUpdates: [...cardHistories.values()].flat(),
+    oneTimeIncomes,
   });
 
   const now = new Date();
@@ -124,6 +138,8 @@ export default async function DashboardPage({
           <p className="text-sm text-ink-2">{format(now, "EEEE, MMMM d, yyyy")}</p>
         </div>
         <div className="flex gap-2">
+          <RecordExpenseButton cards={expenseTargets} />
+          <AddOneTimeIncomeButton />
           <UpdateCheckingButton currentBalance={checking?.latest?.balance} variant="secondary" />
           <AddCardButton />
         </div>
@@ -373,6 +389,9 @@ export default async function DashboardPage({
                   {activity.map((item) => {
                     const amount = Number(item.detail.split(":")[1]);
                     const isPayment = item.kind === "card-payment";
+                    const isIncome = item.kind === "one-time-income";
+                    const isCharge = item.kind === "expense";
+                    const isLastExpense = isCharge && lastExpense?.editable && item.id === `ex-${lastExpense.id}`;
                     return (
                       <li key={item.id} className="flex items-start gap-2.5">
                         <span className="mt-1.5">
@@ -381,17 +400,28 @@ export default async function DashboardPage({
                         <span className="min-w-0 flex-1">
                           <span className="flex items-baseline justify-between gap-2">
                             <span className="truncate text-sm font-medium text-ink">
-                              {isPayment ? `Payment — ${item.label}` : item.label}
+                              {isPayment
+                                ? `Payment — ${item.label}`
+                                : isIncome
+                                  ? `Received — ${item.label}`
+                                  : isCharge
+                                    ? `Expense — ${item.label}`
+                                    : item.label}
                             </span>
                             <Money
                               cents={isPayment ? -amount : amount}
-                              signed={isPayment}
-                              className={cx("shrink-0 text-sm", isPayment && "text-good-text")}
+                              signed={isPayment || isIncome || isCharge}
+                              className={cx("shrink-0 text-sm", (isPayment || isIncome) && "text-good-text")}
                             />
                           </span>
-                          <span className="block text-xs text-ink-2">
-                            {item.reason ? `${item.reason} · ` : ""}
-                            {formatDistanceToNow(item.when, { addSuffix: true })}
+                          <span className="flex items-center justify-between gap-2">
+                            <span className="block text-xs text-ink-2">
+                              {item.reason ? `${item.reason} · ` : ""}
+                              {formatDistanceToNow(item.when, { addSuffix: true })}
+                            </span>
+                            {isLastExpense && lastExpense && (
+                              <LastExpenseActions expense={lastExpense} cards={expenseTargets} />
+                            )}
                           </span>
                         </span>
                       </li>
