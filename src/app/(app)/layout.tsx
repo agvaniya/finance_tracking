@@ -21,7 +21,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           </Link>
           <div className="flex items-center gap-2">
             <NavLinks />
-            <UserMenu username={user.username} version={APP_VERSION} signOutAction={signOut} />
+            <UserMenu username={user.username} theme={user.theme} version={APP_VERSION} signOutAction={signOut} />
           </div>
         </div>
       </header>

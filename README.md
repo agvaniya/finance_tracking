@@ -36,6 +36,9 @@ Recharts. Containerized, with Terraform for a minimal-cost AWS deployment
   when the real one arrives you correct that single due date from the
   **Upcoming bills** list without touching the schedule. Later months keep the
   estimate; entering 0 means it will not be charged that time.
+- **Appearance** — light, dark, or follow the system, chosen from the account
+  menu. The choice is stored on the account and follows you to any browser
+  you sign in from.
 - **Record expense** — log a purchase with its amount, a comment, and where
   it was paid from: on a card (added to that card's balance, and counted as
   card spending by the forecast) or from checking (taken off the balance).

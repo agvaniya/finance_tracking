@@ -3,9 +3,11 @@
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { prisma } from "./db";
+import { isTheme } from "./theme";
 import {
   clearAttempts,
   createSession,
+  setThemeCookie,
   destroySession,
   recordFailedAttempt,
   requireUserId,
@@ -140,6 +142,15 @@ export async function signIn(_prev: ActionState, formData: FormData): Promise<Ac
   clearAttempts(throttleKey);
   await createSession(user.id);
   redirect("/");
+}
+
+/** Remembers the appearance choice on the account and on this browser. */
+export async function setTheme(theme: string): Promise<void> {
+  const userId = await requireUserId();
+  if (!isTheme(theme)) return;
+  await prisma.user.update({ where: { id: userId }, data: { theme } });
+  await setThemeCookie(theme);
+  revalidatePath("/", "layout");
 }
 
 export async function signOut(): Promise<void> {

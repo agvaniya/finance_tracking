@@ -2,6 +2,7 @@ import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { prisma } from "./db";
+import { THEME_COOKIE, isTheme, type Theme } from "./theme";
 
 const COOKIE_NAME = "ft_session";
 const SESSION_DAYS = 30;
@@ -24,6 +25,28 @@ function cookieSecure(): boolean {
   return process.env.NODE_ENV === "production";
 }
 
+/**
+ * The theme is stored on the user, but the root layout must know it before
+ * any database call, so a plain cookie mirrors it. Not httpOnly: the value
+ * is a display preference, nothing sensitive.
+ */
+export async function setThemeCookie(theme: Theme): Promise<void> {
+  const jar = await cookies();
+  jar.set(THEME_COOKIE, theme, {
+    sameSite: "lax",
+    secure: cookieSecure(),
+    maxAge: 365 * 24 * 60 * 60,
+    path: "/",
+  });
+}
+
+/** The theme to render with, from the cookie; "system" when unknown. */
+export async function readThemeCookie(): Promise<Theme> {
+  const jar = await cookies();
+  const value = jar.get(THEME_COOKIE)?.value ?? "";
+  return isTheme(value) ? value : "system";
+}
+
 export async function createSession(userId: string): Promise<void> {
   const token = await new SignJWT({})
     .setProtectedHeader({ alg: "HS256" })
@@ -40,6 +63,10 @@ export async function createSession(userId: string): Promise<void> {
     maxAge: SESSION_DAYS * 24 * 60 * 60,
     path: "/",
   });
+
+  // Follow the user's stored choice onto this browser.
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { theme: true } });
+  if (user && isTheme(user.theme)) await setThemeCookie(user.theme);
 }
 
 export async function destroySession(): Promise<void> {
@@ -69,7 +96,7 @@ export async function getSessionUser() {
   if (!userId) return null;
   return prisma.user.findUnique({
     where: { id: userId },
-    select: { id: true, username: true, createdAt: true },
+    select: { id: true, username: true, theme: true, createdAt: true },
   });
 }
 

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Archivo, IBM_Plex_Mono } from "next/font/google";
+import { readThemeCookie } from "@/lib/auth";
 import "./globals.css";
 
 const archivo = Archivo({
@@ -18,9 +19,15 @@ export const metadata: Metadata = {
   description: "Credit card balances, checking account, and the month ahead.",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default async function RootLayout({ children }: LayoutProps<"/">) {
+  // "system" leaves the attribute off so the OS preference applies.
+  const theme = await readThemeCookie();
   return (
-    <html lang="en" className={`${archivo.variable} ${plexMono.variable} h-full antialiased`}>
+    <html
+      lang="en"
+      data-theme={theme === "system" ? undefined : theme}
+      className={`${archivo.variable} ${plexMono.variable} h-full antialiased`}
+    >
       <body className="min-h-full flex flex-col">{children}</body>
     </html>
   );

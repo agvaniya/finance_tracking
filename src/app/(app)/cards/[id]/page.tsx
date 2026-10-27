@@ -6,7 +6,7 @@ import { TrendChart } from "@/components/charts";
 import { EditCardButton, RecordPaymentButton, UpdateBalanceButton } from "@/components/forms";
 import { EmptyState, Money, Panel, cx } from "@/components/ui";
 import { sampleDailySeries } from "@/lib/chartData";
-import { seriesColor } from "@/lib/colors";
+import { CHART_CHROME, seriesColor } from "@/lib/colors";
 import { AUTO_PAY_LABELS, type AutoPayType } from "@/lib/domain";
 import { formatCents } from "@/lib/money";
 import { requireUserId } from "@/lib/auth";
@@ -34,7 +34,7 @@ export default async function CardDetailPage({ params }: { params: Promise<{ id:
   );
   const series = [
     { key: "total", name: "Total balance", color },
-    { key: "statement", name: "Due this month", color: "#898781" },
+    { key: "statement", name: "Due this month", color: CHART_CHROME.muted },
   ];
 
   const utilization =

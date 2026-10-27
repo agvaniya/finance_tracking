@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useActionState, useEffect, useRef, useState, type ReactNode } from "react";
+import { useActionState, useEffect, useRef, useState, type ReactNode, useTransition } from "react";
 import { createPortal } from "react-dom";
 import {
   changePassword,
@@ -9,8 +9,8 @@ import {
   lookupSecurityQuestions,
   resetPassword,
   signIn,
-  signUp,
-} from "@/lib/accountActions";
+  signUp, setTheme } from "@/lib/accountActions";
+import { THEMES, THEME_LABELS, type Theme } from "@/lib/theme";
 import { SECURITY_QUESTIONS } from "@/lib/securityQuestions";
 import { buttonStyles, cx } from "./ui";
 
@@ -301,12 +301,49 @@ function DeleteAccountDialog({ username, onClose }: { username: string; onClose:
   );
 }
 
+function AppearancePicker({ current }: { current: string }) {
+  const [theme, setThemeState] = useState(current);
+  const [, startTransition] = useTransition();
+  const choose = (next: Theme) => {
+    setThemeState(next);
+    // Apply at once; the server remembers it and re-renders to match.
+    const root = document.documentElement;
+    if (next === "system") root.removeAttribute("data-theme");
+    else root.setAttribute("data-theme", next);
+    startTransition(() => setTheme(next));
+  };
+  return (
+    <div className="border-b border-hairline px-3 py-2">
+      <span className="block text-[11px] uppercase tracking-wide text-muted">Appearance</span>
+      <div role="radiogroup" aria-label="Appearance" className="mt-1.5 grid grid-cols-3 gap-1 rounded-lg bg-page p-0.5">
+        {THEMES.map((t) => (
+          <button
+            key={t}
+            type="button"
+            role="radio"
+            aria-checked={theme === t}
+            onClick={() => choose(t)}
+            className={cx(
+              "rounded-md px-2 py-1 text-xs font-medium transition-colors",
+              theme === t ? "bg-surface text-ink shadow-[0_1px_2px_rgba(11,11,11,0.08)]" : "text-ink-2 hover:text-ink"
+            )}
+          >
+            {THEME_LABELS[t]}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function UserMenu({
   username,
+  theme,
   version,
   signOutAction,
 }: {
   username: string;
+  theme: string;
   version: string;
   signOutAction: () => Promise<void>;
 }) {
@@ -356,6 +393,7 @@ export function UserMenu({
             <span className="block text-[11px] uppercase tracking-wide text-muted">Signed in as</span>
             <span className="block truncate text-sm font-medium text-ink">{username}</span>
           </p>
+          <AppearancePicker current={theme} />
           <button type="button" role="menuitem" className={item} onClick={() => { setOpen(false); setDialog("password"); }}>
             Change password
           </button>

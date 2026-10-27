@@ -376,7 +376,7 @@ export function RecordPaymentButton({
               <input name="note" placeholder="e.g. Extra payment from bonus" className={inputClass} />
             </Field>
             <label className="flex items-start gap-2.5 rounded-lg border border-hairline bg-page/60 px-3 py-2.5">
-              <input type="checkbox" name="deductFromChecking" className="mt-0.5 size-4 accent-[#104281]" />
+              <input type="checkbox" name="deductFromChecking" className="mt-0.5 size-4 accent-accent" />
               <span className="text-sm text-ink-2">
                 Also deduct this amount from the checking balance
               </span>
@@ -843,7 +843,7 @@ function ExpenseFields({ expense, dates }: { expense?: RecurringExpense; dates?:
           type="checkbox"
           name="estimated"
           defaultChecked={expense?.estimated ?? false}
-          className="mt-0.5 size-4 accent-[#104281]"
+          className="mt-0.5 size-4 accent-accent"
         />
         <span className="text-sm text-ink-2">
           This amount varies — treat it as an estimate I will correct when the

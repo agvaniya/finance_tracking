@@ -21,6 +21,8 @@ model User {
   id           String   @id @default(cuid())
   username     String   @unique
   passwordHash String
+  // system | light | dark — validated in src/lib/theme.ts
+  theme        String   @default("system")
   createdAt    DateTime @default(now())
 
   securityQuestions SecurityQuestion[]

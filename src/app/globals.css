@@ -38,6 +38,78 @@
   --series-7: #e34948;
 }
 
+/* Dark palette: same roles, tuned for a near-black page. Applied when the
+   user chose dark, or when they follow the system and it prefers dark. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --page: #131311;
+  --surface: #1c1c1a;
+  --ink: #f1f0ea;
+  --ink-2: #b4b2aa;
+  --muted: #86847c;
+  --hairline: #2d2d2a;
+  --baseline: #46453f;
+
+  --accent: #7aa9ea;
+  --accent-strong: #9dbff1;
+  --accent-wash: #1b2b47;
+
+  --good: #3fc43f;
+  --good-text: #7bd97b;
+  --warning: #f7c35e;
+  --serious: #f29c7a;
+  --critical: #e86a6a;
+  --critical-wash: #3b2020;
+  --warning-wash: #3a3118;
+  --good-wash: #1e3421;
+
+  --series-0: #5e9ae8;
+  --series-1: #f0875c;
+  --series-2: #38c892;
+  --series-3: #f3b73e;
+  --series-4: #ef98ba;
+  --series-5: #46ad46;
+  --series-6: #8a7ed6;
+  --series-7: #ec6e6d;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --page: #131311;
+    --surface: #1c1c1a;
+    --ink: #f1f0ea;
+    --ink-2: #b4b2aa;
+    --muted: #86847c;
+    --hairline: #2d2d2a;
+    --baseline: #46453f;
+
+    --accent: #7aa9ea;
+    --accent-strong: #9dbff1;
+    --accent-wash: #1b2b47;
+
+    --good: #3fc43f;
+    --good-text: #7bd97b;
+    --warning: #f7c35e;
+    --serious: #f29c7a;
+    --critical: #e86a6a;
+    --critical-wash: #3b2020;
+    --warning-wash: #3a3118;
+    --good-wash: #1e3421;
+
+    --series-0: #5e9ae8;
+    --series-1: #f0875c;
+    --series-2: #38c892;
+    --series-3: #f3b73e;
+    --series-4: #ef98ba;
+    --series-5: #46ad46;
+    --series-6: #8a7ed6;
+    --series-7: #ec6e6d;
+  }
+}
+
 @theme inline {
   --color-page: var(--page);
   --color-surface: var(--surface);

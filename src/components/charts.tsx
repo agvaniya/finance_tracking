@@ -17,7 +17,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { CHART_CHROME, STATUS } from "@/lib/colors";
+import { CHART_CHROME, CHECKING_COLOR, STATUS } from "@/lib/colors";
 import { formatCents, formatCentsCompact } from "@/lib/money";
 import type {
   ForecastCardPayment,
@@ -121,7 +121,7 @@ export function TrendChart({ rows, series }: { rows: TrendRow[]; series: TrendSe
                     rows={payload
                       .filter((p) => p.value != null)
                       .map((p) => ({
-                        color: String(p.stroke ?? p.color ?? "#000"),
+                        color: String(p.stroke ?? p.color ?? "var(--ink)"),
                         name: String(p.name),
                         value: Number(p.value),
                       }))}
@@ -244,7 +244,7 @@ export function ProjectionChart({
   }
   const min = Math.min(0, ...points.map((p) => p.balance));
   const eventColor = (s: ForecastCardPayment["severity"]) =>
-    s === "overdraft" ? STATUS.critical : s === "tight" ? STATUS.warning : "#104281";
+    s === "overdraft" ? STATUS.critical : s === "tight" ? STATUS.warning : CHECKING_COLOR;
 
   return (
     <div>
@@ -253,8 +253,8 @@ export function ProjectionChart({
           <AreaChart data={points} margin={{ top: 8, right: 8, bottom: 0, left: 4 }}>
             <defs>
               <linearGradient id="runway" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#104281" stopOpacity={0.18} />
-                <stop offset="100%" stopColor="#104281" stopOpacity={0.02} />
+                <stop offset="0%" stopColor={CHECKING_COLOR} stopOpacity={0.18} />
+                <stop offset="100%" stopColor={CHECKING_COLOR} stopOpacity={0.02} />
               </linearGradient>
             </defs>
             <CartesianGrid vertical={false} stroke={CHART_CHROME.grid} />
@@ -305,7 +305,7 @@ export function ProjectionChart({
                 return (
                   <ChartTooltip
                     title={dateTick(String(label))}
-                    rows={[{ color: "#104281", name: "Projected checking", value: Number(payload[0].value) }]}
+                    rows={[{ color: CHECKING_COLOR, name: "Projected checking", value: Number(payload[0].value) }]}
                     footer={notes.length > 0 ? notes.join(" · ") : undefined}
                   />
                 );
@@ -317,7 +317,7 @@ export function ProjectionChart({
               type="monotone"
               dataKey="balance"
               name="Projected checking"
-              stroke="#104281"
+              stroke={CHECKING_COLOR}
               strokeWidth={2}
               fill="url(#runway)"
               dot={false}
@@ -363,7 +363,7 @@ export function ProjectionChart({
           </span>
         )}
         <span className="flex items-center gap-1.5">
-          <span className="size-2 rounded-full bg-[#104281]" /> Auto pay scheduled
+          <span className="size-2 rounded-full bg-accent" /> Auto pay scheduled
         </span>
         <span className="flex items-center gap-1.5">
           <span className="size-2 rounded-full" style={{ backgroundColor: STATUS.warning }} /> Dips below buffer
