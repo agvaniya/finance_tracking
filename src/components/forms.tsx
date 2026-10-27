@@ -46,6 +46,7 @@ import {
   type AutoPayType,
   type ScheduleFrequency,
 } from "@/lib/domain";
+import { formatCents } from "@/lib/money";
 import { buttonStyles, cx } from "./ui";
 
 // ---------- shared field primitives ----------
@@ -483,8 +484,37 @@ export function RecordExpenseButton({
 }
 
 /**
- * Edit / remove for the most recent expense, offered only while nothing has
- * been recorded on the same card or account since (the server re-checks).
+ * One line describing a payment method's most recent expense, with edit and
+ * remove when nothing newer has been recorded on it.
+ */
+export function LastExpenseLine({
+  expense,
+  cards,
+  showMethod = false,
+}: {
+  expense: { id: string; amount: number; target: string; note: string | null; label: string; recordedAt: Date; editable: boolean };
+  cards: ExpenseTarget[];
+  showMethod?: boolean;
+}) {
+  return (
+    <span className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs text-ink-2">
+      <span className="min-w-0">
+        Last expense{showMethod ? ` from ${expense.label}` : ""}:{" "}
+        <span className="money font-medium text-ink">{formatCents(expense.amount)}</span>
+        {expense.note && <> · {expense.note}</>}
+        {" · "}
+        {format(expense.recordedAt, "MMM d")}
+        {!expense.editable && <span className="text-muted"> · balance recorded since, so it is fixed</span>}
+      </span>
+      {expense.editable && <LastExpenseActions expense={expense} cards={cards} />}
+    </span>
+  );
+}
+
+/**
+ * Edit / remove for a method's most recent expense, offered only while
+ * nothing has been recorded on the same card or account since (the server
+ * re-checks).
  */
 export function LastExpenseActions({
   expense,

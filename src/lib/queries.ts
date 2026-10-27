@@ -121,41 +121,54 @@ export interface LastExpense {
   editable: boolean;
 }
 
-/** The most recently recorded expense, and whether it can still be corrected. */
-export async function getLastExpense(userId: string): Promise<LastExpense | null> {
-  const expense = await prisma.oneOffExpense.findFirst({
-    where: { userId },
+/**
+ * The most recent expense on each payment method — every active card and the
+ * checking account — with whether it can still be corrected, which is the
+ * case only while it is the newest balance record on that method.
+ */
+export async function getLastExpenses(userId: string): Promise<LastExpense[]> {
+  const expenses = await prisma.oneOffExpense.findMany({
+    where: { userId, OR: [{ card: { archivedAt: null } }, { cardId: null }] },
     orderBy: { recordedAt: "desc" },
     include: { card: { select: { name: true } }, account: { select: { name: true } } },
   });
-  if (!expense) return null;
 
-  let editable = false;
-  if (expense.cardId && expense.cardUpdateId) {
-    const latest = await prisma.cardBalanceUpdate.findFirst({
-      where: { cardId: expense.cardId },
-      orderBy: { recordedAt: "desc" },
-      select: { id: true },
-    });
-    editable = latest?.id === expense.cardUpdateId;
-  } else if (expense.accountId && expense.checkingUpdateId) {
-    const latest = await prisma.checkingBalanceUpdate.findFirst({
-      where: { accountId: expense.accountId },
-      orderBy: { recordedAt: "desc" },
-      select: { id: true },
-    });
-    editable = latest?.id === expense.checkingUpdateId;
+  // Newest first, so the first one seen per method is its latest.
+  const latestByMethod = new Map<string, (typeof expenses)[number]>();
+  for (const e of expenses) {
+    const key = e.cardId ?? "checking";
+    if (!latestByMethod.has(key)) latestByMethod.set(key, e);
   }
 
-  return {
-    id: expense.id,
-    amount: expense.amount,
-    note: expense.note,
-    target: expense.cardId ?? "checking",
-    label: expense.card?.name ?? expense.account?.name ?? "Checking account",
-    recordedAt: expense.recordedAt,
-    editable,
-  };
+  return Promise.all(
+    [...latestByMethod.values()].map(async (expense) => {
+      let editable = false;
+      if (expense.cardId && expense.cardUpdateId) {
+        const latest = await prisma.cardBalanceUpdate.findFirst({
+          where: { cardId: expense.cardId },
+          orderBy: { recordedAt: "desc" },
+          select: { id: true },
+        });
+        editable = latest?.id === expense.cardUpdateId;
+      } else if (expense.accountId && expense.checkingUpdateId) {
+        const latest = await prisma.checkingBalanceUpdate.findFirst({
+          where: { accountId: expense.accountId },
+          orderBy: { recordedAt: "desc" },
+          select: { id: true },
+        });
+        editable = latest?.id === expense.checkingUpdateId;
+      }
+      return {
+        id: expense.id,
+        amount: expense.amount,
+        note: expense.note,
+        target: expense.cardId ?? "checking",
+        label: expense.card?.name ?? expense.account?.name ?? "Checking account",
+        recordedAt: expense.recordedAt,
+        editable,
+      };
+    })
+  );
 }
 
 /** One-time income entries, newest first, optionally limited to recent days. */

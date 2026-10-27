@@ -7,6 +7,7 @@ import {
   AdjustBillButton,
   ExpenseRowActions,
   IncomeRowActions,
+  LastExpenseLine,
   OneTimeIncomeRowActions,
   RecordExpenseButton,
   RenameCheckingButton,
@@ -36,6 +37,7 @@ import {
   getExpenseAdjustments,
   getExpenses,
   getIncomes,
+  getLastExpenses,
   getOneTimeIncomes,
 } from "@/lib/queries";
 
@@ -53,6 +55,7 @@ export default async function CheckingPage() {
     cardHistories,
     cardPayments,
     oneTimeIncomes,
+    lastExpenses,
   ] = await Promise.all([
     getCheckingAccount(userId),
     getCheckingHistory(userId),
@@ -63,7 +66,10 @@ export default async function CheckingPage() {
     getCardHistories(userId, HISTORY_DAYS),
     getCardPayments(userId, HISTORY_DAYS),
     getOneTimeIncomes(userId),
+    getLastExpenses(userId),
   ]);
+  const expenseTargets = cards.map((c) => ({ id: c.card.id, name: c.card.name }));
+  const lastCheckingExpense = lastExpenses.find((e) => e.target === "checking");
 
   const forecast = buildForecast({
     checkingHistory: history,
@@ -116,11 +122,17 @@ export default async function CheckingPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <RecordExpenseButton cards={cards.map((c) => ({ id: c.card.id, name: c.card.name }))} />
+          <RecordExpenseButton cards={expenseTargets} />
           <AddOneTimeIncomeButton />
           <UpdateCheckingButton currentBalance={checking?.latest?.balance} />
         </div>
       </div>
+
+      {lastCheckingExpense && (
+        <div className="rounded-xl border border-hairline bg-surface px-4 py-2.5">
+          <LastExpenseLine expense={lastCheckingExpense} cards={expenseTargets} />
+        </div>
+      )}
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {[

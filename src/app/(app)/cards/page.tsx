@@ -1,11 +1,17 @@
 import Link from "next/link";
 import { format, formatDistanceToNow } from "date-fns";
-import { AddCardButton, RecordExpenseButton, RecordPaymentButton, UpdateBalanceButton } from "@/components/forms";
+import {
+  AddCardButton,
+  LastExpenseLine,
+  RecordExpenseButton,
+  RecordPaymentButton,
+  UpdateBalanceButton,
+} from "@/components/forms";
 import { Dot, EmptyState, Money, cx } from "@/components/ui";
 import { seriesColor } from "@/lib/colors";
 import { AUTO_PAY_LABELS, autoPayDateInMonth, type AutoPayType } from "@/lib/domain";
 import { requireUserId } from "@/lib/auth";
-import { getCardsWithState } from "@/lib/queries";
+import { getCardsWithState, getLastExpenses } from "@/lib/queries";
 
 export const dynamic = "force-dynamic";
 
@@ -29,8 +35,9 @@ function UtilizationBar({ used, limit }: { used: number; limit: number }) {
 
 export default async function CardsPage() {
   const userId = await requireUserId();
-  const cards = await getCardsWithState(userId);
+  const [cards, lastExpenses] = await Promise.all([getCardsWithState(userId), getLastExpenses(userId)]);
   const now = new Date();
+  const expenseTargets = cards.map((c) => ({ id: c.card.id, name: c.card.name }));
 
   return (
     <div className="space-y-5">
@@ -42,7 +49,7 @@ export default async function CardsPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          {cards.length > 0 && <RecordExpenseButton cards={cards.map((c) => ({ id: c.card.id, name: c.card.name }))} />}
+          {cards.length > 0 && <RecordExpenseButton cards={expenseTargets} />}
           <AddCardButton />
         </div>
       </div>
@@ -59,6 +66,7 @@ export default async function CardsPage() {
                 nextAutoPay = autoPayDateInMonth(card.autoPayDay, now.getFullYear(), now.getMonth() + 1);
               }
             }
+            const lastExpense = lastExpenses.find((e) => e.target === card.id);
             return (
               <article
                 key={card.id}
@@ -110,6 +118,12 @@ export default async function CardsPage() {
                   )}
                   {current && <> · updated {formatDistanceToNow(current.recordedAt, { addSuffix: true })}</>}
                 </p>
+
+                {lastExpense && (
+                  <div className="mt-3 rounded-lg bg-page/60 px-3 py-2">
+                    <LastExpenseLine expense={lastExpense} cards={expenseTargets} />
+                  </div>
+                )}
 
                 <div className="mt-4 flex flex-wrap gap-2">
                   <UpdateBalanceButton

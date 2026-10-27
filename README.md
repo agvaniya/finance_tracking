@@ -39,9 +39,11 @@ Recharts. Containerized, with Terraform for a minimal-cost AWS deployment
 - **Record expense** — log a purchase with its amount, a comment, and where
   it was paid from: on a card (added to that card's balance, and counted as
   card spending by the forecast) or from checking (taken off the balance).
-  The most recent expense can be edited or removed from the dashboard's
-  activity list while nothing newer has been recorded on that card or
-  account; the balance movement is taken back and redone.
+  The most recent expense on each card and on the checking account can be
+  edited or removed (from the card's tile, the Checking page, or the
+  dashboard's activity list) while nothing newer has been recorded on that
+  card or account; the balance movement is taken back and redone. Expenses
+  recorded before this existed were backfilled from their balance updates.
 - **One-time income** — a transfer from savings, a gift, or a reimbursement
   is recorded in one step: the checking balance goes up by the amount, and the
   entry is kept so the forecast knows the jump will not repeat. Removing an

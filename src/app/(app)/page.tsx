@@ -24,7 +24,7 @@ import {
   getExpenseAdjustments,
   getExpenses,
   getIncomes,
-  getLastExpense,
+  getLastExpenses,
   getOneTimeIncomes,
   getRecentActivity,
 } from "@/lib/queries";
@@ -78,7 +78,7 @@ export default async function DashboardPage({
     cardHistories,
     cardPayments,
     oneTimeIncomes,
-    lastExpense,
+    lastExpenses,
   ] = await Promise.all([
     getCardsWithState(userId),
     getCheckingAccount(userId),
@@ -91,8 +91,9 @@ export default async function DashboardPage({
     getCardHistories(userId, HISTORY_DAYS),
     getCardPayments(userId, HISTORY_DAYS),
     getOneTimeIncomes(userId, HISTORY_DAYS),
-    getLastExpense(userId),
+    getLastExpenses(userId),
   ]);
+  const editableExpenses = new Map(lastExpenses.filter((e) => e.editable).map((e) => [`ex-${e.id}`, e]));
   const expenseTargets = cards.map((c) => ({ id: c.card.id, name: c.card.name }));
 
   const forecast = buildForecast({
@@ -391,7 +392,7 @@ export default async function DashboardPage({
                     const isPayment = item.kind === "card-payment";
                     const isIncome = item.kind === "one-time-income";
                     const isCharge = item.kind === "expense";
-                    const isLastExpense = isCharge && lastExpense?.editable && item.id === `ex-${lastExpense.id}`;
+                    const correctable = isCharge ? editableExpenses.get(item.id) : undefined;
                     return (
                       <li key={item.id} className="flex items-start gap-2.5">
                         <span className="mt-1.5">
@@ -419,9 +420,7 @@ export default async function DashboardPage({
                               {item.reason ? `${item.reason} · ` : ""}
                               {formatDistanceToNow(item.when, { addSuffix: true })}
                             </span>
-                            {isLastExpense && lastExpense && (
-                              <LastExpenseActions expense={lastExpense} cards={expenseTargets} />
-                            )}
+                            {correctable && <LastExpenseActions expense={correctable} cards={expenseTargets} />}
                           </span>
                         </span>
                       </li>
