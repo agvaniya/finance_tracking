@@ -11,7 +11,7 @@ const WEEKDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
 function eventColor(e: CalendarEvent): string {
   if (e.type === "payday" || e.type === "one-time-income") return STATUS.goodText;
-  if (e.type === "bill") return CHART_INK;
+  if (e.type === "bill" || e.type === "bill-paid") return CHART_INK;
   if (e.type === "autopay" && e.severity === "overdraft") return STATUS.critical;
   if (e.type === "autopay" && e.severity === "tight") return STATUS.warning;
   return e.colorSlot == null ? CHECKING_COLOR : seriesColor(e.colorSlot);
@@ -32,6 +32,14 @@ function Marker({ event }: { event: CalendarEvent }) {
     return (
       <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden className="shrink-0">
         <path d="M4 7.5 L0.5 1 L7.5 1 Z" fill={color} />
+      </svg>
+    );
+  }
+  if (event.type === "bill-paid") {
+    // Outlined, like a recorded payment: the bill has left the balance.
+    return (
+      <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden className="shrink-0">
+        <path d="M4 7 L1 1.5 L7 1.5 Z" fill="none" stroke={color} strokeWidth="1.3" />
       </svg>
     );
   }
@@ -161,6 +169,14 @@ export function MonthCalendar({
               <path d="M4 7.5 L0.5 1 L7.5 1 Z" fill={CHART_INK} />
             </svg>
             Bill due
+          </span>
+        )}
+        {events.some((e) => e.type === "bill-paid") && (
+          <span className="flex items-center gap-1.5">
+            <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden>
+              <path d="M4 7 L1 1.5 L7 1.5 Z" fill="none" stroke={CHART_INK} strokeWidth="1.3" />
+            </svg>
+            Bill paid
           </span>
         )}
       </div>

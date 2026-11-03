@@ -23,6 +23,18 @@ Recharts. Containerized, with Terraform for a minimal-cost AWS deployment
 - **Balance tracking** — each card tracks *total balance* and *last month
   (statement) balance due this month*. Record a payment at any time; it updates
   the card and can optionally deduct from checking.
+- **Automatic posting** — when a scheduled bill's due date arrives it is taken
+  out of the checking balance by itself, and when a card's auto pay day
+  arrives the payment the card's rule calls for is recorded: the card's
+  balance (and available credit) and the checking balance both move. Each
+  occurrence is posted exactly once, the first time the app is opened on or
+  after its date. A balance you enter yourself stays the truth: an occurrence
+  dated on or before your latest checking (or card) balance entry is treated as
+  already inside it and is not posted again. The Checking page lists what was
+  posted under **Posted automatically**; an estimated bill posted there can be
+  corrected and the difference follows. Posting starts from the day you first
+  open the app after upgrading, so nothing you had already handled by hand is
+  repeated.
 - **Checking account** — update the balance whenever it changes, with a reason
   ("Salary deposited", "Gift received", "Refund issued from insurance", …).
   Full history is kept for everything.
@@ -34,8 +46,9 @@ Recharts. Containerized, with Terraform for a minimal-cost AWS deployment
 - **Scheduled expenses** — rent, a car lease, utilities: the same cadences,
   flowing the other way. A bill that varies can be marked as an estimate, and
   when the real one arrives you correct that single due date from the
-  **Upcoming bills** list without touching the schedule. Later months keep the
-  estimate; entering 0 means it will not be charged that time.
+  **Upcoming bills** list (or, once posted, from **Posted automatically**)
+  without touching the schedule. Later months keep the estimate; entering 0
+  means it will not be charged that time.
 - **Appearance** — light, dark, or follow the system, chosen from the account
   menu. The choice is stored on the account and follows you to any browser
   you sign in from.
@@ -228,9 +241,13 @@ The forecast starts from the latest recorded checking balance and replays the
 money we know is going to move, then adds a small history-derived residual.
 
 - **Scheduled income** lands on each pay date; **scheduled bills** leave on
-  each due date (at the corrected amount where you have entered one).
+  each due date (at the corrected amount where you have entered one). Bills
+  whose date has already arrived are no longer a projection: settlement
+  (`src/lib/settlement.ts`) has posted them to the recorded balance, so the
+  forecast only carries the ones still ahead.
 - **This month's card payments** are what is still due after the payments
-  already recorded this month. Recording a payment reduces the amount due,
+  already recorded this month, including the auto pay settlement posted if
+  its day has passed. Recording a payment reduces the amount due,
   never below $0. A card with auto pay withdraws on its configured day
   (statement balance, full balance, minimum, or fixed); a card paid by hand
   owes its remaining statement balance on the day it is usually paid, or at
@@ -266,7 +283,34 @@ money we know is going to move, then adds a small history-derived residual.
   what you could safely pay toward cards beyond what's already planned.
 
 Predictions only know what you record: the more regularly balances and
-payments are logged, the better the forecast.
+payments are logged, the better the forecast. Scheduled bills and auto pays
+post themselves, but everything else (card purchases, paydays, cash) still
+needs a balance update or a recorded expense.
+
+### How automatic posting decides
+
+Settlement runs at the top of every page render for the signed-in user and
+considers every active bill occurrence and every auto pay date from the
+user's `settleFrom` day (the first visit after upgrading) through today that
+has no `ScheduledPosting` row yet. Each gets exactly one row:
+
+- **POSTED** — the amount was taken out of checking (a `SCHEDULED` checking
+  update). For an auto pay the card also gets a `CardPayment` dated on the
+  due date and a `PAYMENT` balance update, and checking is lowered by the
+  same amount.
+- **ABSORBED** — a checking `SNAPSHOT` (a balance you typed in) dated on or
+  after the due date already includes it, so nothing moves. An absorbed auto
+  pay still records the `CardPayment`, with no balance change, so payment
+  history and the forecast's residual stay complete.
+- **NOTHING_DUE** — the bill was corrected to $0, or the card's rule came to
+  $0 on that day (nothing owed, or already paid that month).
+
+The auto pay amount is what the card's rule said on the due date: the card as
+last recorded by then, less payments already made that month, the same
+figure the forecast shows beforehand. Days are the server's local days, so
+run the container in the time zone you live in (`TZ`) if the two differ.
+Derived updates (a recorded expense, payment or one-time income) never absorb
+anything: only a typed-in balance does.
 
 ## Versioning
 

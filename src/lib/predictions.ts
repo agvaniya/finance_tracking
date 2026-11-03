@@ -24,7 +24,9 @@ import type { CardWithState } from "./queries";
  *
  *   - scheduled income on its pay dates (one-time income is already in the
  *     recorded balance, so it is only taken out of the history residual);
- *   - scheduled bills on their due dates, at corrected amounts where known;
+ *   - scheduled bills on their due dates, at corrected amounts where known
+ *     (bills whose date has arrived are posted to the real balance by
+ *     src/lib/settlement.ts, so only later ones are projected);
  *   - this month's card payments: what is still due after the payments
  *     already recorded this month (never below zero), on the auto pay day or
  *     the day the card is usually paid by hand;
@@ -170,6 +172,12 @@ export interface ForecastInput {
   cardUpdates?: CardUpdatePoint[];
   /** One-time income recorded within the history window. */
   oneTimeIncomes?: OneTimeIncomePoint[];
+  /**
+   * Bills and auto pays due on or before this day have already been posted
+   * to the balances (or deliberately left alone) by settlement, so the
+   * projection must not take them out again. Normally today.
+   */
+  settledThrough?: Date;
 }
 
 function startOfDay(d: Date): Date {
@@ -305,7 +313,8 @@ function projectCardPayments(
   profile: ForecastCardProfile,
   today: Date,
   scheduledFrom: Date,
-  horizonEnd: Date
+  horizonEnd: Date,
+  settledThrough: Date | null
 ): CardEvent[] {
   const events: CardEvent[] = [];
   const auto = hasAutoPay(card);
@@ -323,7 +332,10 @@ function projectCardPayments(
   let total = state.totalBalance;
   const dueNow = plannedPaymentThisMonth(card, state, paidThisMonth);
   let dateNow: Date | null = paymentDate(y, m);
-  if (dateNow < scheduledFrom) {
+  if (auto && settledThrough && dateNow <= settledThrough) {
+    // Settlement has already posted (or absorbed) this month's auto pay.
+    dateNow = null;
+  } else if (dateNow < scheduledFrom) {
     // An auto pay whose day has passed already fired; a manual payment that
     // is overdue is assumed to be made now.
     dateNow = auto ? null : scheduledFrom;
@@ -443,6 +455,14 @@ export function buildForecast(input: ForecastInput, now = new Date()): Forecast 
     latestDay && latestDay >= today
       ? new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1)
       : today;
+  // Bills are posted by settlement as their dates arrive, so the projection
+  // only carries the ones after the settled day. Income is not auto-posted
+  // and keeps the recorded-balance cut-off.
+  const settledThrough = input.settledThrough ? startOfDay(input.settledThrough) : null;
+  const dayAfterSettled = settledThrough
+    ? new Date(settledThrough.getFullYear(), settledThrough.getMonth(), settledThrough.getDate() + 1)
+    : null;
+  const billsFrom = dayAfterSettled && dayAfterSettled > scheduledFrom ? dayAfterSettled : scheduledFrom;
 
   const incomeEvents: ForecastIncome[] = activeIncomes
     .flatMap((income) =>
@@ -460,7 +480,7 @@ export function buildForecast(input: ForecastInput, now = new Date()): Forecast 
   // kept (as skipped, at 0) so the correction can still be changed or reset.
   const expenseEvents: ForecastExpense[] = activeExpenses
     .flatMap((expense) =>
-      scheduleOccurrences(expense, scheduledFrom, horizonEnd).map((date) => {
+      scheduleOccurrences(expense, billsFrom, horizonEnd).map((date) => {
         const amount = amountForOccurrence(expense, date, adjustments);
         return {
           expenseId: expense.id,
@@ -486,7 +506,16 @@ export function buildForecast(input: ForecastInput, now = new Date()): Forecast 
     cardProfiles.push(profile);
     dueThisMonth += current.statementBalance;
     rawEvents.push(
-      ...projectCardPayments(card, current, paidThisMonth ?? 0, profile, today, scheduledFrom, horizonEnd)
+      ...projectCardPayments(
+        card,
+        current,
+        paidThisMonth ?? 0,
+        profile,
+        today,
+        scheduledFrom,
+        horizonEnd,
+        settledThrough
+      )
     );
   }
   rawEvents.sort((a, b) => a.date.getTime() - b.date.getTime());

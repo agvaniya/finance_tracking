@@ -13,7 +13,7 @@ import {
   RenameCheckingButton,
   UpdateCheckingButton,
 } from "@/components/forms";
-import { EmptyState, Money, Panel, cx } from "@/components/ui";
+import { Dot, EmptyState, Money, Panel, cx } from "@/components/ui";
 import { requireUserId } from "@/lib/auth";
 import { sampleDailySeries } from "@/lib/chartData";
 import { CHECKING_COLOR } from "@/lib/colors";
@@ -39,12 +39,17 @@ import {
   getIncomes,
   getLastExpenses,
   getOneTimeIncomes,
+  getRecentPostings,
 } from "@/lib/queries";
+import { settleDueEvents } from "@/lib/settlement";
+import { seriesColor } from "@/lib/colors";
 
 export const dynamic = "force-dynamic";
 
 export default async function CheckingPage() {
   const userId = await requireUserId();
+  const now = new Date();
+  await settleDueEvents(userId, now);
   const [
     checking,
     history,
@@ -56,6 +61,7 @@ export default async function CheckingPage() {
     cardPayments,
     oneTimeIncomes,
     lastExpenses,
+    postings,
   ] = await Promise.all([
     getCheckingAccount(userId),
     getCheckingHistory(userId),
@@ -67,6 +73,7 @@ export default async function CheckingPage() {
     getCardPayments(userId, HISTORY_DAYS),
     getOneTimeIncomes(userId),
     getLastExpenses(userId),
+    getRecentPostings(userId, 60),
   ]);
   const expenseTargets = cards.map((c) => ({ id: c.card.id, name: c.card.name }));
   const lastCheckingExpense = lastExpenses.find((e) => e.target === "checking");
@@ -80,8 +87,8 @@ export default async function CheckingPage() {
     cardPayments,
     cardUpdates: [...cardHistories.values()].flat(),
     oneTimeIncomes,
+    settledThrough: now,
   });
-  const now = new Date();
   const oneTimeThisMonth = oneTimeIncomes
     .filter((i) => i.receivedAt.getFullYear() === now.getFullYear() && i.receivedAt.getMonth() === now.getMonth())
     .reduce((sum, i) => sum + i.amount, 0);
@@ -380,6 +387,79 @@ export default async function CheckingPage() {
           </ul>
         </Panel>
       )}
+
+      <Panel
+        title="Posted automatically"
+        aside={
+          postings.length > 0
+            ? "Last 60 days"
+            : "Bills and auto pays move the balances on their day"
+        }
+      >
+        {postings.length === 0 ? (
+          <EmptyState title="Nothing posted yet">
+            When a scheduled bill falls due it is taken out of checking here, and a card&apos;s auto
+            pay is recorded as a payment, lowering the card and checking together. A bill that
+            was estimated can be corrected afterwards and the difference follows.
+          </EmptyState>
+        ) : (
+          <ul className="divide-y divide-hairline">
+            {postings.map((p) => {
+              const autoPay = p.kind === "AUTOPAY";
+              return (
+                <li key={p.id} className="flex flex-wrap items-center justify-between gap-3 py-2.5 first:pt-0">
+                  <span className="flex min-w-0 items-center gap-2.5">
+                    <Dot color={p.colorSlot == null ? CHECKING_COLOR : seriesColor(p.colorSlot)} className="mt-px" />
+                    <span className="min-w-0">
+                      <span className="flex items-center gap-2">
+                        <span className={cx("text-sm font-medium", p.outcome === "NOTHING_DUE" ? "text-muted" : "text-ink")}>
+                          {autoPay ? `${p.label} auto pay` : p.label}
+                        </span>
+                        {p.outcome === "ABSORBED" ? (
+                          <span className="rounded-full bg-page px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted">
+                            In your update
+                          </span>
+                        ) : p.outcome === "NOTHING_DUE" ? (
+                          <span className="rounded-full bg-page px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted">
+                            Nothing due
+                          </span>
+                        ) : p.adjusted ? (
+                          <span className="rounded-full bg-good-wash px-1.5 py-0.5 text-[10px] font-semibold uppercase text-good-text">
+                            Actual
+                          </span>
+                        ) : null}
+                      </span>
+                      <span className="block text-xs text-ink-2">
+                        Due {format(p.dueDate, "EEEE, MMM d")}
+                        {p.outcome === "POSTED" && (
+                          <> · posted {format(p.postedAt, "MMM d")}</>
+                        )}
+                        {p.outcome === "ABSORBED" && <> · already in a balance you entered</>}
+                      </span>
+                    </span>
+                  </span>
+                  <span className="flex items-center gap-3">
+                    <Money
+                      cents={p.outcome === "POSTED" ? -p.amount : p.amount}
+                      signed={p.outcome === "POSTED"}
+                      className={cx("text-sm font-medium", p.outcome === "POSTED" ? "text-ink" : "text-muted")}
+                    />
+                    {p.correctable && (
+                      <AdjustBillButton
+                        expenseId={p.sourceId}
+                        expenseName={p.label}
+                        dueDateISO={format(p.dueDate, "yyyy-MM-dd")}
+                        currentAmount={p.amount}
+                        adjusted={p.adjusted}
+                      />
+                    )}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </Panel>
 
       <Panel title="Balance history" aside="Last 120 days">
         {history.length > 0 ? (

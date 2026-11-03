@@ -11,7 +11,8 @@ export type CalendarEventType =
   | "autopay"
   | "payday"
   | "one-time-income"
-  | "bill";
+  | "bill"
+  | "bill-paid";
 
 export interface CalendarEvent {
   dateISO: string;
@@ -38,7 +39,7 @@ export async function getMonthEvents(
   const to = new Date(year, monthIndex + 1, 1);
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-  const [cardUpdates, payments, checkingUpdates, oneTimeIncomes] = await Promise.all([
+  const [cardUpdates, payments, checkingUpdates, oneTimeIncomes, postedBills] = await Promise.all([
     prisma.cardBalanceUpdate.findMany({
       where: { recordedAt: { gte: from, lt: to }, kind: { in: ["SNAPSHOT", "CHARGE"] }, card: { userId } },
       include: { card: true },
@@ -48,11 +49,21 @@ export async function getMonthEvents(
       include: { card: true },
     }),
     prisma.checkingBalanceUpdate.findMany({
-      where: { recordedAt: { gte: from, lt: to }, account: { userId }, oneTimeIncome: null },
+      where: {
+        recordedAt: { gte: from, lt: to },
+        account: { userId },
+        oneTimeIncome: null,
+        scheduledPosting: null,
+      },
       include: { account: true },
     }),
     prisma.oneTimeIncome.findMany({
       where: { receivedAt: { gte: from, lt: to }, account: { userId } },
+    }),
+    // Bills settlement has dealt with, on their due dates. Auto pays appear
+    // through the card payments they recorded.
+    prisma.scheduledPosting.findMany({
+      where: { userId, kind: "BILL", outcome: { in: ["POSTED", "ABSORBED"] }, dueDate: { gte: from, lt: to } },
     }),
   ]);
 
@@ -121,6 +132,19 @@ export async function getMonthEvents(
     });
   }
 
+  for (const b of postedBills) {
+    events.push({
+      dateISO: toISODate(b.dueDate),
+      type: "bill-paid",
+      label: b.label,
+      detail: `${formatCents(b.amount)} ${
+        b.outcome === "ABSORBED" ? "paid (in a balance you entered)" : "paid from checking"
+      }`,
+      colorSlot: null,
+      severity: "ok",
+    });
+  }
+
   // Upcoming card payments in this month (past ones already appear as
   // payments): this month's remaining amount due, or an estimated statement
   // for a later month, on the auto pay day or the usual manual payment day.
@@ -163,7 +187,9 @@ export async function getMonthEvents(
   }
 
   // Scheduled bills still ahead of us this month, at their corrected amount
-  // where the real figure has been entered.
+  // where the real figure has been entered. Bills due today have already
+  // been posted by settlement, so the list starts tomorrow.
+  const tomorrow = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
   const expenses = await prisma.recurringExpense.findMany({
     where: { active: true, account: { userId } },
   });
@@ -174,7 +200,7 @@ export async function getMonthEvents(
       })
     );
     for (const expense of expenses) {
-      for (const date of scheduleOccurrences(expense, today > from ? today : from, monthEnd)) {
+      for (const date of scheduleOccurrences(expense, tomorrow > from ? tomorrow : from, monthEnd)) {
         const amount = amountForOccurrence(expense, date, adjustments);
         if (amount <= 0) continue;
         const corrected = adjustments.has(occurrenceKey(expense.id, date));

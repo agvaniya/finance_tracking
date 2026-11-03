@@ -5,7 +5,7 @@
 // DATABASE_URL (see README "Switching databases").
 
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
   // Engines for the local machine plus the Alpine images used in Docker/Fargate.
   binaryTargets = ["native", "linux-musl-arm64-openssl-3.0.x", "linux-musl-openssl-3.0.x"]
 }
@@ -18,17 +18,22 @@ datasource db {
 /// An account holder. Every card and checking account belongs to exactly one
 /// user, and all reads are filtered by the signed-in user's id.
 model User {
-  id           String   @id @default(cuid())
-  username     String   @unique
+  id           String    @id @default(cuid())
+  username     String    @unique
   passwordHash String
   // system | light | dark — validated in src/lib/theme.ts
-  theme        String   @default("system")
-  createdAt    DateTime @default(now())
+  theme        String    @default("system")
+  createdAt    DateTime  @default(now())
+  /// Scheduled bills and auto pays are posted to the balances automatically
+  /// from this day on (src/lib/settlement.ts). Set on the first visit after
+  /// the feature arrived, so nothing already handled by hand is re-posted.
+  settleFrom   DateTime?
 
   securityQuestions SecurityQuestion[]
   cards             CreditCard[]
   checkingAccounts  CheckingAccount[]
   oneOffExpenses    OneOffExpense[]
+  scheduledPostings ScheduledPosting[]
 }
 
 /// Used only to re-establish access when a password is forgotten. Answers are
@@ -65,6 +70,9 @@ model CreditCard {
   autoPayType        String    @default("STATEMENT")
   autoPayFixedAmount Int? // cents, used when autoPayType = FIXED
   minimumPayment     Int       @default(3500) // cents, used when autoPayType = MINIMUM
+  /// When the auto pay rule above was last set. Auto pays are only posted for
+  /// dates after this, so enabling auto pay today does not invent last week's.
+  autoPaySetAt       DateTime?
   // Stable chart color slot (0-7), assigned at creation and never repainted.
   colorSlot          Int       @default(0)
   archivedAt         DateTime?
@@ -79,7 +87,7 @@ model CreditCard {
 }
 
 model CardBalanceUpdate {
-  id               String   @id @default(cuid())
+  id               String     @id @default(cuid())
   cardId           String
   card             CreditCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
   totalBalance     Int // cents — full outstanding balance
@@ -87,21 +95,24 @@ model CardBalanceUpdate {
   reason           String?
   // SNAPSHOT (user-entered) | PAYMENT (derived from a recorded payment)
   // | CHARGE (derived from a recorded expense on the card)
-  kind             String   @default("SNAPSHOT")
-  recordedAt       DateTime @default(now())
+  kind             String     @default("SNAPSHOT")
+  recordedAt       DateTime   @default(now())
 
-  oneOffExpense OneOffExpense?
+  oneOffExpense    OneOffExpense?
+  scheduledPosting ScheduledPosting?
 
   @@index([cardId, recordedAt])
 }
 
 model CardPayment {
-  id     String   @id @default(cuid())
+  id     String     @id @default(cuid())
   cardId String
   card   CreditCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
   amount Int // cents
   note   String?
-  paidAt DateTime @default(now())
+  paidAt DateTime   @default(now())
+
+  scheduledPosting ScheduledPosting?
 
   @@index([cardId, paidAt])
 }
@@ -262,15 +273,58 @@ model ExpenseAdjustment {
 }
 
 model CheckingBalanceUpdate {
-  id         String   @id @default(cuid())
+  id         String          @id @default(cuid())
   accountId  String
   account    CheckingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
   balance    Int // cents
   reason     String?
-  recordedAt DateTime @default(now())
+  // SNAPSHOT (the user looked at the bank and entered the balance)
+  // | PAYMENT | EXPENSE | INCOME | SCHEDULED (derived: a known amount applied
+  // to the previous balance). Only a SNAPSHOT says what the bank really holds,
+  // so only snapshots decide which scheduled items are already accounted for.
+  kind       String          @default("SNAPSHOT")
+  recordedAt DateTime        @default(now())
 
-  oneTimeIncome OneTimeIncome?
-  oneOffExpense OneOffExpense?
+  oneTimeIncome    OneTimeIncome?
+  oneOffExpense    OneOffExpense?
+  scheduledPosting ScheduledPosting?
 
   @@index([accountId, recordedAt])
+}
+
+/// One scheduled bill occurrence or one month's card auto pay, once its date
+/// has arrived. Written exactly once per occurrence by src/lib/settlement.ts,
+/// whether the money was posted to the balances (POSTED), was already inside
+/// a balance the user entered afterwards (ABSORBED), or came to nothing
+/// (NOTHING_DUE). The links point at the records it wrote.
+model ScheduledPosting {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // BILL (a RecurringExpense occurrence) | AUTOPAY (a CreditCard's monthly pull)
+  kind     String
+  /// RecurringExpense id for BILL, CreditCard id for AUTOPAY. No foreign key:
+  /// the row outlives a deleted schedule so the history stays explained.
+  sourceId String
+  /// The scheduled date, at local midnight.
+  dueDate  DateTime
+  // POSTED | ABSORBED | NOTHING_DUE
+  outcome  String
+  amount   Int // cents
+  /// The bill or card name at the time, for display after a rename or delete.
+  label    String
+
+  checkingUpdateId String?                @unique
+  checkingUpdate   CheckingBalanceUpdate? @relation(fields: [checkingUpdateId], references: [id], onDelete: SetNull)
+  cardPaymentId    String?                @unique
+  cardPayment      CardPayment?           @relation(fields: [cardPaymentId], references: [id], onDelete: SetNull)
+  cardUpdateId     String?                @unique
+  cardUpdate       CardBalanceUpdate?     @relation(fields: [cardUpdateId], references: [id], onDelete: SetNull)
+
+  postedAt DateTime @default(now())
+
+  @@unique([kind, sourceId, dueDate])
+  @@index([userId, postedAt])
+  @@index([userId, dueDate])
 }

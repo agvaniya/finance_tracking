@@ -12,6 +12,7 @@ import { seriesColor } from "@/lib/colors";
 import { AUTO_PAY_LABELS, autoPayDateInMonth, type AutoPayType } from "@/lib/domain";
 import { requireUserId } from "@/lib/auth";
 import { getCardsWithState, getLastExpenses } from "@/lib/queries";
+import { settleDueEvents } from "@/lib/settlement";
 
 export const dynamic = "force-dynamic";
 
@@ -35,6 +36,7 @@ function UtilizationBar({ used, limit }: { used: number; limit: number }) {
 
 export default async function CardsPage() {
   const userId = await requireUserId();
+  await settleDueEvents(userId);
   const [cards, lastExpenses] = await Promise.all([getCardsWithState(userId), getLastExpenses(userId)]);
   const now = new Date();
   const expenseTargets = cards.map((c) => ({ id: c.card.id, name: c.card.name }));

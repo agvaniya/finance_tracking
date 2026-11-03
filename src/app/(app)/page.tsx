@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { format, formatDistanceToNow } from "date-fns";
 import {
   AddCardButton,
@@ -27,7 +28,9 @@ import {
   getLastExpenses,
   getOneTimeIncomes,
   getRecentActivity,
+  getRecentPostings,
 } from "@/lib/queries";
+import { settleDueEvents } from "@/lib/settlement";
 
 export const dynamic = "force-dynamic";
 
@@ -65,6 +68,10 @@ export default async function DashboardPage({
 }) {
   const { month } = await searchParams;
   const userId = await requireUserId();
+  const now = new Date();
+  // Bills and auto pays whose day has come move the real balances first, so
+  // everything below reads the ledger after them.
+  await settleDueEvents(userId, now);
 
   const [
     cards,
@@ -79,6 +86,7 @@ export default async function DashboardPage({
     cardPayments,
     oneTimeIncomes,
     lastExpenses,
+    postings,
   ] = await Promise.all([
     getCardsWithState(userId),
     getCheckingAccount(userId),
@@ -92,6 +100,7 @@ export default async function DashboardPage({
     getCardPayments(userId, HISTORY_DAYS),
     getOneTimeIncomes(userId, HISTORY_DAYS),
     getLastExpenses(userId),
+    getRecentPostings(userId, 7),
   ]);
   const editableExpenses = new Map(lastExpenses.filter((e) => e.editable).map((e) => [`ex-${e.id}`, e]));
   const expenseTargets = cards.map((c) => ({ id: c.card.id, name: c.card.name }));
@@ -105,9 +114,11 @@ export default async function DashboardPage({
     cardPayments,
     cardUpdates: [...cardHistories.values()].flat(),
     oneTimeIncomes,
+    settledThrough: now,
   });
 
-  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const postedToday = postings.filter((p) => p.outcome === "POSTED" && p.postedAt >= startOfToday);
   // Bills corrected to $0 are only listed on the checking page, where they can be reset.
   const upcomingBills = forecast.expenses.filter((b) => !b.skipped);
   const [calYear, calMonth] = /^\d{4}-\d{2}$/.test(month ?? "")
@@ -145,6 +156,31 @@ export default async function DashboardPage({
           <AddCardButton />
         </div>
       </div>
+
+      {postedToday.length > 0 && (
+        <div
+          role="status"
+          className="flex flex-wrap items-baseline gap-x-2 gap-y-1 rounded-xl border border-hairline bg-surface px-4 py-3 text-sm text-ink-2"
+        >
+          <span className="font-medium text-ink">Posted today:</span>
+          {postedToday.map((p, i) => (
+            <span key={p.id} className="flex items-center gap-1.5">
+              {p.colorSlot != null && <Dot color={seriesColor(p.colorSlot)} />}
+              <span>
+                {p.kind === "AUTOPAY" ? `${p.label} auto pay` : p.label}{" "}
+                <span className="money font-medium text-ink">{formatCents(p.amount)}</span>
+                {p.dueDate < startOfToday && (
+                  <span className="text-muted"> (due {format(p.dueDate, "MMM d")})</span>
+                )}
+                {i < postedToday.length - 1 ? " ·" : ""}
+              </span>
+            </span>
+          ))}
+          <Link href="/checking" className="ml-auto text-xs font-medium text-accent-strong hover:underline">
+            Review
+          </Link>
+        </div>
+      )}
 
       {alerts.length > 0 && (
         <div className="space-y-2">
@@ -392,6 +428,7 @@ export default async function DashboardPage({
                     const isPayment = item.kind === "card-payment";
                     const isIncome = item.kind === "one-time-income";
                     const isCharge = item.kind === "expense";
+                    const isBill = item.kind === "bill";
                     const correctable = isCharge ? editableExpenses.get(item.id) : undefined;
                     return (
                       <li key={item.id} className="flex items-start gap-2.5">
@@ -407,11 +444,13 @@ export default async function DashboardPage({
                                   ? `Received — ${item.label}`
                                   : isCharge
                                     ? `Expense — ${item.label}`
-                                    : item.label}
+                                    : isBill
+                                      ? `Bill — ${item.label}`
+                                      : item.label}
                             </span>
                             <Money
-                              cents={isPayment ? -amount : amount}
-                              signed={isPayment || isIncome || isCharge}
+                              cents={isPayment || isBill ? -amount : amount}
+                              signed={isPayment || isIncome || isCharge || isBill}
                               className={cx("shrink-0 text-sm", (isPayment || isIncome) && "text-good-text")}
                             />
                           </span>

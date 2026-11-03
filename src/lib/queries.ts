@@ -218,7 +218,7 @@ export async function getCardHistories(
 export interface ActivityItem {
   id: string;
   when: Date;
-  kind: "card-update" | "expense" | "card-payment" | "checking-update" | "one-time-income";
+  kind: "card-update" | "expense" | "card-payment" | "checking-update" | "one-time-income" | "bill";
   label: string;
   detail: string;
   reason: string | null;
@@ -227,7 +227,7 @@ export interface ActivityItem {
 
 /** Merged recent activity across cards and checking, newest first. */
 export async function getRecentActivity(userId: string, limit = 12): Promise<ActivityItem[]> {
-  const [cardUpdates, payments, checkingUpdates, oneTimeIncomes, expenses] = await Promise.all([
+  const [cardUpdates, payments, checkingUpdates, oneTimeIncomes, expenses, bills] = await Promise.all([
     prisma.cardBalanceUpdate.findMany({
       where: { kind: "SNAPSHOT", card: { userId } },
       orderBy: { recordedAt: "desc" },
@@ -241,8 +241,9 @@ export async function getRecentActivity(userId: string, limit = 12): Promise<Act
       include: { card: true },
     }),
     prisma.checkingBalanceUpdate.findMany({
-      // Updates written by a one-time income or an expense are shown as those.
-      where: { account: { userId }, oneTimeIncome: null, oneOffExpense: null },
+      // Updates written by a one-time income, an expense or a scheduled
+      // posting are shown as those.
+      where: { account: { userId }, oneTimeIncome: null, oneOffExpense: null, scheduledPosting: null },
       orderBy: { recordedAt: "desc" },
       take: limit,
       include: { account: true },
@@ -258,9 +259,24 @@ export async function getRecentActivity(userId: string, limit = 12): Promise<Act
       take: limit,
       include: { card: { select: { name: true, colorSlot: true } }, account: { select: { name: true } } },
     }),
+    // Auto pays show up through the card payment they recorded.
+    prisma.scheduledPosting.findMany({
+      where: { userId, kind: "BILL", outcome: "POSTED" },
+      orderBy: { postedAt: "desc" },
+      take: limit,
+    }),
   ]);
 
   const items: ActivityItem[] = [
+    ...bills.map((b) => ({
+      id: `sp-${b.id}`,
+      when: b.postedAt,
+      kind: "bill" as const,
+      label: b.label,
+      detail: `bill:${b.amount}`,
+      reason: `Scheduled bill due ${b.dueDate.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`,
+      colorSlot: null,
+    })),
     ...cardUpdates.map((u) => ({
       id: `cu-${u.id}`,
       when: u.recordedAt,
@@ -309,4 +325,72 @@ export async function getRecentActivity(userId: string, limit = 12): Promise<Act
   ];
   items.sort((a, b) => b.when.getTime() - a.when.getTime());
   return items.slice(0, limit);
+}
+
+export interface PostingView {
+  id: string;
+  kind: "BILL" | "AUTOPAY";
+  sourceId: string;
+  dueDate: Date;
+  outcome: "POSTED" | "ABSORBED" | "NOTHING_DUE";
+  amount: number;
+  label: string;
+  postedAt: Date;
+  /** Card color for auto pays; null for bills (checking). */
+  colorSlot: number | null;
+  /** For bills: whether the schedule still exists, so the amount can be corrected. */
+  correctable: boolean;
+  /** For bills: whether a correction has been entered for this due date. */
+  adjusted: boolean;
+}
+
+/**
+ * What settlement has decided recently, newest due date first: bills and
+ * auto pays posted to the balances, absorbed into a balance the user entered,
+ * or found to come to nothing.
+ */
+export async function getRecentPostings(userId: string, days = 60): Promise<PostingView[]> {
+  const since = new Date(Date.now() - days * 86_400_000);
+  const postings = await prisma.scheduledPosting.findMany({
+    where: { userId, dueDate: { gte: since } },
+    orderBy: [{ dueDate: "desc" }, { postedAt: "desc" }],
+  });
+  if (postings.length === 0) return [];
+
+  const cardIds = [...new Set(postings.filter((p) => p.kind === "AUTOPAY").map((p) => p.sourceId))];
+  const expenseIds = [...new Set(postings.filter((p) => p.kind === "BILL").map((p) => p.sourceId))];
+  const [cards, expenses, adjustments] = await Promise.all([
+    cardIds.length
+      ? prisma.creditCard.findMany({ where: { id: { in: cardIds }, userId }, select: { id: true, colorSlot: true } })
+      : [],
+    expenseIds.length
+      ? prisma.recurringExpense.findMany({
+          where: { id: { in: expenseIds }, account: { userId } },
+          select: { id: true },
+        })
+      : [],
+    expenseIds.length
+      ? prisma.expenseAdjustment.findMany({
+          where: { expenseId: { in: expenseIds }, dueDate: { gte: since } },
+          select: { expenseId: true, dueDate: true },
+        })
+      : [],
+  ]);
+  const colorByCard = new Map(cards.map((c) => [c.id, c.colorSlot]));
+  const liveExpenses = new Set(expenses.map((e) => e.id));
+  const adjusted = new Set(adjustments.map((a) => `${a.expenseId}:${a.dueDate.getTime()}`));
+
+  return postings.map((p) => ({
+    id: p.id,
+    kind: p.kind as PostingView["kind"],
+    sourceId: p.sourceId,
+    dueDate: p.dueDate,
+    outcome: p.outcome as PostingView["outcome"],
+    amount: p.amount,
+    label: p.label,
+    postedAt: p.postedAt,
+    colorSlot: p.kind === "AUTOPAY" ? (colorByCard.get(p.sourceId) ?? null) : null,
+    correctable: p.kind === "BILL" && p.outcome !== "ABSORBED" && liveExpenses.has(p.sourceId),
+    adjusted: adjusted.has(`${p.sourceId}:${p.dueDate.getTime()}`),
+  }));
 }

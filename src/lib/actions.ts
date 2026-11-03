@@ -6,12 +6,14 @@ import { prisma } from "./db";
 import { requireUserId } from "./auth";
 import {
   ONE_TIME_INCOME_LABELS,
+  hasAutoPay,
   isAutoPayType,
   isOneTimeIncomeCategory,
   isScheduleFrequency,
   usesDayOfMonth,
 } from "./domain";
 import { parseDollarsToCents } from "./money";
+import { repostBillCorrection } from "./settlement";
 
 export interface ActionState {
   ok?: boolean;
@@ -127,6 +129,8 @@ export async function createCard(_prev: ActionState, formData: FormData): Promis
       ...parsed.data,
       userId,
       colorSlot: count % 8,
+      // Auto pays are posted from today on; nothing earlier is invented.
+      autoPaySetAt: hasAutoPay(parsed.data) ? new Date() : null,
       balanceUpdates:
         initialBalance != null
           ? {
@@ -149,7 +153,19 @@ export async function updateCard(cardId: string, _prev: ActionState, formData: F
   await assertOwnsCard(userId, cardId);
   const parsed = parseCardFields(formData);
   if (parsed.error || !parsed.data) return { error: parsed.error };
-  await prisma.creditCard.update({ where: { id: cardId }, data: parsed.data });
+
+  // A changed auto pay rule applies from now; the old rule's past pulls are
+  // already on record and must not be re-posted under the new one.
+  const before = await prisma.creditCard.findUniqueOrThrow({ where: { id: cardId } });
+  const next = parsed.data;
+  const ruleChanged =
+    before.autoPayDay !== next.autoPayDay ||
+    before.autoPayType !== next.autoPayType ||
+    before.autoPayFixedAmount !== next.autoPayFixedAmount ||
+    before.minimumPayment !== next.minimumPayment;
+  const autoPaySetAt = !hasAutoPay(next) ? null : ruleChanged || !before.autoPaySetAt ? new Date() : before.autoPaySetAt;
+
+  await prisma.creditCard.update({ where: { id: cardId }, data: { ...next, autoPaySetAt } });
   revalidateAll();
   return { ok: true };
 }
@@ -224,6 +240,7 @@ export async function recordPayment(cardId: string, _prev: ActionState, formData
             accountId: account.id,
             balance: account.updates[0].balance - amount,
             reason: `Payment to ${card.name}`,
+            kind: "PAYMENT",
           },
         });
       }
@@ -262,6 +279,7 @@ async function applyExpense(
         accountId: account.id,
         balance: account.updates[0].balance - amount,
         reason: note ? `Expense: ${note}` : "Expense",
+        kind: "EXPENSE",
       },
     });
     return { cardId: null, accountId: account.id, cardUpdateId: null, checkingUpdateId: update.id };
@@ -459,6 +477,7 @@ export async function recordOneTimeIncome(_prev: ActionState, formData: FormData
         accountId: account.id,
         balance: account.updates[0].balance + amount,
         reason: `${ONE_TIME_INCOME_LABELS[category]}: ${name}`,
+        kind: "INCOME",
       },
     });
     await tx.oneTimeIncome.create({
@@ -688,10 +707,14 @@ export async function adjustBill(
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDateISO)) return { error: "That due date is not valid." };
   const dueDate = new Date(`${dueDateISO}T00:00:00`);
 
-  await prisma.expenseAdjustment.upsert({
-    where: { expenseId_dueDate: { expenseId, dueDate } },
-    create: { expenseId, dueDate, amount, note: text(formData, "note") },
-    update: { amount, note: text(formData, "note") },
+  await prisma.$transaction(async (tx) => {
+    await tx.expenseAdjustment.upsert({
+      where: { expenseId_dueDate: { expenseId, dueDate } },
+      create: { expenseId, dueDate, amount, note: text(formData, "note") },
+      update: { amount, note: text(formData, "note") },
+    });
+    // Already taken out of checking at the estimate? Move the difference.
+    await repostBillCorrection(tx, userId, expenseId, dueDate, amount);
   });
   revalidateAll();
   return { ok: true };
@@ -702,7 +725,11 @@ export async function clearBillAdjustment(expenseId: string, dueDateISO: string)
   const userId = await requireUserId();
   await assertOwnsExpense(userId, expenseId);
   const dueDate = new Date(`${dueDateISO}T00:00:00`);
-  await prisma.expenseAdjustment.deleteMany({ where: { expenseId, dueDate } });
+  await prisma.$transaction(async (tx) => {
+    await tx.expenseAdjustment.deleteMany({ where: { expenseId, dueDate } });
+    const expense = await tx.recurringExpense.findUniqueOrThrow({ where: { id: expenseId } });
+    await repostBillCorrection(tx, userId, expenseId, dueDate, expense.amount);
+  });
   revalidateAll();
 }
 

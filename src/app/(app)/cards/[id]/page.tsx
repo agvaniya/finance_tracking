@@ -11,12 +11,14 @@ import { AUTO_PAY_LABELS, type AutoPayType } from "@/lib/domain";
 import { formatCents } from "@/lib/money";
 import { requireUserId } from "@/lib/auth";
 import { getCard } from "@/lib/queries";
+import { settleDueEvents } from "@/lib/settlement";
 
 export const dynamic = "force-dynamic";
 
 export default async function CardDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const userId = await requireUserId();
+  await settleDueEvents(userId);
   // getCard filters by owner, so another user's id simply 404s.
   const card = await getCard(userId, id);
   if (!card) notFound();
